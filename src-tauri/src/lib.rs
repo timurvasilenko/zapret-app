@@ -1287,23 +1287,23 @@ fn setup_tray(app: &AppHandle) -> Result<(), tauri::Error> {
 }
 
 pub fn run() {
+    if !is_running_as_admin() {
+        let text = HSTRING::from(
+            "Для работы ZPRT App требуются права администратора.\nПерезапустите приложение от имени администратора.",
+        );
+        let title = HSTRING::from("Недостаточно прав");
+        unsafe {
+            let _ = MessageBoxW(None, &text, &title, MB_OK | MB_ICONERROR);
+        }
+        std::process::exit(1);
+    }
+
     ensure_single_instance_or_exit();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(AppFlags::default())
         .setup(|app| {
-            if !is_running_as_admin() {
-                let text = HSTRING::from(
-                    "Для работы ZPRT App требуются права администратора.\nПерезапустите приложение от имени администратора.",
-                );
-                let title = HSTRING::from("Недостаточно прав");
-                unsafe {
-                    let _ = MessageBoxW(None, &text, &title, MB_OK | MB_ICONERROR);
-                }
-                std::process::exit(1);
-            }
-
             setup_tray(app.handle())?;
             set_tray_icon_for_state(app.handle(), is_winws_running());
             let _ = user_list_paths();
