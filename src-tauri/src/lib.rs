@@ -360,10 +360,10 @@ fn set_autostart_impl(enabled: bool) -> Result<(), String> {
         } else {
             let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
             if error.is_empty() {
-                Err("Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ РЎРѓР С•Р В·Р Т‘Р В°РЎвЂљРЎРЉ Р В·Р В°Р Т‘Р В°РЎвЂЎРЎС“ Р В°Р Р†РЎвЂљР С•Р В·Р В°Р С—РЎС“РЎРѓР С”Р В° Р Р† Р СџР В»Р В°Р Р…Р С‘РЎР‚Р С•Р Р†РЎвЂ°Р С‘Р С”Р Вµ Р В·Р В°Р Т‘Р В°Р Р…Р С‘Р в„–".to_string())
+                Err("Не удалось создать задачу автозапуска в Планировщике заданий".to_string())
             } else {
                 Err(format!(
-                    "Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ РЎРѓР С•Р В·Р Т‘Р В°РЎвЂљРЎРЉ Р В·Р В°Р Т‘Р В°РЎвЂЎРЎС“ Р В°Р Р†РЎвЂљР С•Р В·Р В°Р С—РЎС“РЎРѓР С”Р В° Р Р† Р СџР В»Р В°Р Р…Р С‘РЎР‚Р С•Р Р†РЎвЂ°Р С‘Р С”Р Вµ Р В·Р В°Р Т‘Р В°Р Р…Р С‘Р в„–: {error}"
+                    "Не удалось создать задачу автозапуска в Планировщике заданий: {error}"
                 ))
             }
         }
@@ -380,18 +380,18 @@ fn set_autostart_impl(enabled: bool) -> Result<(), String> {
             let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
             let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
             let missing = stderr.contains("cannot find")
-                || stderr.contains("Р Р…Р Вµ РЎС“Р Т‘Р В°Р ВµРЎвЂљРЎРѓРЎРЏ Р Р…Р В°Р в„–РЎвЂљР С‘")
+                || stderr.contains("не удается найти‘")
                 || stdout.contains("cannot find")
-                || stdout.contains("Р Р…Р Вµ РЎС“Р Т‘Р В°Р ВµРЎвЂљРЎРѓРЎРЏ Р Р…Р В°Р в„–РЎвЂљР С‘");
+                || stdout.contains("не удается найти");
             if missing {
                 Ok(())
             } else {
                 let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
                 if error.is_empty() {
-                    Err("Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ РЎС“Р Т‘Р В°Р В»Р С‘РЎвЂљРЎРЉ Р В·Р В°Р Т‘Р В°РЎвЂЎРЎС“ Р В°Р Р†РЎвЂљР С•Р В·Р В°Р С—РЎС“РЎРѓР С”Р В° Р С‘Р В· Р СџР В»Р В°Р Р…Р С‘РЎР‚Р С•Р Р†РЎвЂ°Р С‘Р С”Р В° Р В·Р В°Р Т‘Р В°Р Р…Р С‘Р в„–".to_string())
+                    Err("Не удалось удалить задачу автозапуска из Планировщика заданий".to_string())
                 } else {
                     Err(format!(
-                        "Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ РЎС“Р Т‘Р В°Р В»Р С‘РЎвЂљРЎРЉ Р В·Р В°Р Т‘Р В°РЎвЂЎРЎС“ Р В°Р Р†РЎвЂљР С•Р В·Р В°Р С—РЎС“РЎРѓР С”Р В° Р С‘Р В· Р СџР В»Р В°Р Р…Р С‘РЎР‚Р С•Р Р†РЎвЂ°Р С‘Р С”Р В° Р В·Р В°Р Т‘Р В°Р Р…Р С‘Р в„–: {error}"
+                        "Не удалось удалить задачу автозапуска из Планировщика заданий: {error}"
                     ))
                 }
             }
@@ -721,7 +721,7 @@ fn stop_strategy_impl() -> Result<(), String> {
 
         if !denied_pids.is_empty() {
             return Err(format!(
-                "Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ Р С•РЎРѓРЎвЂљР В°Р Р…Р С•Р Р†Р С‘РЎвЂљРЎРЉ Р С•Р В±РЎвЂ¦Р С•Р Т‘. Р СњР ВµР Т‘Р С•РЎРѓРЎвЂљР В°РЎвЂљР С•РЎвЂЎР Р…Р С• Р С—РЎР‚Р В°Р Р† Р Т‘Р В»РЎРЏ PID: {}. Р вЂ”Р В°Р С—РЎС“РЎРѓРЎвЂљР С‘РЎвЂљР Вµ ZPRT App Р С•РЎвЂљ Р С‘Р СР ВµР Р…Р С‘ Р В°Р Т‘Р СР С‘Р Р…Р С‘РЎРѓРЎвЂљРЎР‚Р В°РЎвЂљР С•РЎР‚Р В°.",
+                "Не удалось остановить обход. Недостаточно прав для PID: {}. Запустите ZPRT App от имени администратора.",
                 denied_pids
                     .iter()
                     .map(|x| x.to_string())
@@ -731,7 +731,7 @@ fn stop_strategy_impl() -> Result<(), String> {
         }
 
         return Err(format!(
-            "Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ Р С—Р С•Р В»Р Р…Р С•РЎРѓРЎвЂљРЎРЉРЎР‹ Р С•РЎРѓРЎвЂљР В°Р Р…Р С•Р Р†Р С‘РЎвЂљРЎРЉ Р С•Р В±РЎвЂ¦Р С•Р Т‘. Р С›РЎРѓРЎвЂљР В°Р Р†РЎв‚¬Р С‘Р ВµРЎРѓРЎРЏ PID: {}",
+            "Не удалось полностью остановить обход. Оставшиеся PID: {}",
             remaining
                 .iter()
                 .map(|x| x.to_string())
@@ -873,7 +873,7 @@ fn select_strategy_impl(app: &AppHandle, strategy: String) -> Result<(), String>
             set_tray_icon_for_state(app, false);
             emit_bypass_state_changed(app);
             return Err(format!(
-                "!B0@0O AB@0B538O >AB0=>2;5=0, => =>2CN 70?CAB8BL =5 C40;>AL: {err}"
+                "Старая стратегия остановлена, но новую запустить не удалось: {err}"
             ));
         }
         set_tray_icon_for_state(app, true);
@@ -1044,7 +1044,7 @@ fn show_custom_update_notification(app: &AppHandle, latest_version: &str) -> Res
         .get_webview_window(UPDATE_TOAST_WINDOW_LABEL)
         .ok_or_else(|| "Toast window is not available".to_string())?;
 
-    let payload = format!("Р вЂќР С•РЎРѓРЎвЂљРЎС“Р С—Р Р…Р В° Р Р…Р С•Р Р†Р В°РЎРЏ Р Р†Р ВµРЎР‚РЎРѓР С‘РЎРЏ zapret: {latest_version}");
+    let payload = format!("Доступна новая версия zapret: {latest_version}");
     let _ = window.emit(UPDATE_TOAST_EVENT, payload);
     let _ = window.show();
 
@@ -1211,9 +1211,9 @@ fn ensure_single_instance_or_exit() {
         let _mutex = CreateMutexW(None, false, &name);
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let text = HSTRING::from(
-                "ZPRT App РЎС“Р В¶Р Вµ Р В·Р В°Р С—РЎС“РЎвЂ°Р ВµР Р….\nР вЂ”Р В°Р С”РЎР‚Р С•Р в„–РЎвЂљР Вµ РЎвЂљР ВµР С”РЎС“РЎвЂ°Р С‘Р в„– РЎРЊР С”Р В·Р ВµР СР С—Р В»РЎРЏРЎР‚ Р С—Р ВµРЎР‚Р ВµР Т‘ Р С—Р С•Р Р†РЎвЂљР С•РЎР‚Р Р…РЎвЂ№Р С Р В·Р В°Р С—РЎС“РЎРѓР С”Р С•Р С.",
+                "ZPRT App уже запущен.\nЗакройте текущий экземпляр перед повторным запуском.",
             );
-            let title = HSTRING::from("Р В­Р С”Р В·Р ВµР СР С—Р В»РЎРЏРЎР‚ РЎС“Р В¶Р Вµ Р В·Р В°Р С—РЎС“РЎвЂ°Р ВµР Р…");
+            let title = HSTRING::from("Экземпляр уже запущен");
             let _ = MessageBoxW(None, &text, &title, MB_OK | MB_ICONERROR);
             std::process::exit(1);
         }
@@ -1295,9 +1295,9 @@ pub fn run() {
         .setup(|app| {
             if !is_running_as_admin() {
                 let text = HSTRING::from(
-                    "Р вЂќР В»РЎРЏ РЎР‚Р В°Р В±Р С•РЎвЂљРЎвЂ№ ZPRT App РЎвЂљРЎР‚Р ВµР В±РЎС“РЎР‹РЎвЂљРЎРѓРЎРЏ Р С—РЎР‚Р В°Р Р†Р В° Р В°Р Т‘Р СР С‘Р Р…Р С‘РЎРѓРЎвЂљРЎР‚Р В°РЎвЂљР С•РЎР‚Р В°.\nР СџР ВµРЎР‚Р ВµР В·Р В°Р С—РЎС“РЎРѓРЎвЂљР С‘РЎвЂљР Вµ Р С—РЎР‚Р С‘Р В»Р С•Р В¶Р ВµР Р…Р С‘Р Вµ Р С•РЎвЂљ Р С‘Р СР ВµР Р…Р С‘ Р В°Р Т‘Р СР С‘Р Р…Р С‘РЎРѓРЎвЂљРЎР‚Р В°РЎвЂљР С•РЎР‚Р В°.",
+                    "Для работы ZPRT App требуются права администратора.\nПерезапустите приложение от имени администратора.",
                 );
-                let title = HSTRING::from("Р СњР ВµР Т‘Р С•РЎРѓРЎвЂљР В°РЎвЂљР С•РЎвЂЎР Р…Р С• Р С—РЎР‚Р В°Р Р†");
+                let title = HSTRING::from("Недостаточно прав");
                 unsafe {
                     let _ = MessageBoxW(None, &text, &title, MB_OK | MB_ICONERROR);
                 }
