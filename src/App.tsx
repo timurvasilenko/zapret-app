@@ -401,6 +401,21 @@ export default function App() {
                             />
                             Запускать ZPRT App вместе с Windows
                         </label>
+
+                        <button
+                            disabled={busy || !state.activeVersion}
+                            onClick={() =>
+                                runAction(
+                                    () =>
+                                        invoke("open_service_bat").then(
+                                            () => undefined,
+                                        ),
+                                    "service.bat открыт",
+                                )
+                            }
+                        >
+                            Открыть service
+                        </button>
                     </div>
                 </section>
             )}

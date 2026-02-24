@@ -913,6 +913,27 @@ async fn set_autostart(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_service_bat() -> Result<(), String> {
+    let config = load_config()?;
+    let version_dir = active_version_dir(&config)?;
+    let service_path = version_dir.join("service.bat");
+    if !service_path.exists() {
+        return Err("Файл service.bat не найден в выбранной версии".to_string());
+    }
+
+    #[cfg(windows)]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", "service.bat"])
+            .current_dir(version_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn set_update_notifications_enabled(enabled: bool) -> Result<(), String> {
     let mut config = load_config()?;
     config.notify_update_available = enabled;
@@ -1351,6 +1372,7 @@ pub fn run() {
             start_bypass,
             stop_bypass,
             set_autostart,
+            open_service_bat,
             set_update_notifications_enabled,
             save_user_list_file,
         ])
