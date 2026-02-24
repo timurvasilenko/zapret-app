@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import coolImage from "./img/cool.jpg";
 
 type AppState = {
     installedVersions: string[];
@@ -91,6 +92,8 @@ export default function App() {
     const [busy, setBusy] = useState(false);
     const [savingLists, setSavingLists] = useState(false);
     const [toasts, setToasts] = useState<Toast[]>([]);
+    const [showEasterEgg, setShowEasterEgg] = useState(false);
+    const [titleClickCount, setTitleClickCount] = useState(0);
     const [selectedListKey, setSelectedListKey] =
         useState<UserListKey>("general");
     const [savedLists, setSavedLists] = useState<Record<UserListKey, string>>({
@@ -99,6 +102,7 @@ export default function App() {
         excludeIps: "",
     });
     const startupUpdateToastShown = useRef(false);
+    const easterEggTimeoutRef = useRef<number | null>(null);
 
     const statusLabel = useMemo(() => {
         if (state.isRunning) return "Запущен";
@@ -237,8 +241,39 @@ export default function App() {
         }
     }, [hasInstalledVersions, tab]);
 
+    useEffect(() => {
+        return () => {
+            if (easterEggTimeoutRef.current !== null) {
+                window.clearTimeout(easterEggTimeoutRef.current);
+            }
+        };
+    }, []);
+
+    function handleTitleClick() {
+        setTitleClickCount((prev) => {
+            const next = prev + 1;
+            if (next >= 10) {
+                setShowEasterEgg(true);
+                if (easterEggTimeoutRef.current !== null) {
+                    window.clearTimeout(easterEggTimeoutRef.current);
+                }
+                easterEggTimeoutRef.current = window.setTimeout(() => {
+                    setShowEasterEgg(false);
+                    easterEggTimeoutRef.current = null;
+                }, 5000);
+                return 0;
+            }
+            return next;
+        });
+    }
+
     return (
         <main className="app">
+            {showEasterEgg && (
+                <div className="easter-egg-overlay" aria-hidden="true">
+                    <img src={coolImage} alt="" />
+                </div>
+            )}
             <div className="toast-stack" aria-live="polite" aria-atomic="true">
                 {toasts.map((toast) => (
                     <div key={toast.id} className={`toast ${toast.type}`}>
@@ -248,7 +283,7 @@ export default function App() {
             </div>
 
             <header className="header">
-                <h1>ZPRT App</h1>
+                <h1 onClick={handleTitleClick}>ZPRT App</h1>
             </header>
 
             <div className="tabs">

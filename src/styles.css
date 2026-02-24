@@ -25,10 +25,28 @@ body {
     position: relative;
 }
 
+.easter-egg-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 5000;
+    background: #000;
+    pointer-events: none;
+}
+
+.easter-egg-overlay img {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    object-fit: fill;
+}
+
 .header h1 {
     margin-top: 0;
     margin-bottom: 0.5rem;
     font-size: 1.5rem;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .header p {
