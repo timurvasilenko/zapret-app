@@ -1,0 +1,22 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/target-portable/
+*.log
+
+# Runtime data (generated рядом с exe)
+zapret/
+user-lists/
+zprt-app-config.json
+zprt-app.exe
+
+# Legacy/duplicate runtime artifacts inside src-tauri (if recreated)
+src-tauri/zapret/
+src-tauri/zprt-app-config.json
+src-tauri/zprt-app.exe
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
