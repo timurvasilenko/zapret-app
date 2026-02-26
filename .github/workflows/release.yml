@@ -1,0 +1,124 @@
+name: Release Portable EXE
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия релиза (например 1.2.3). Если пусто, берется src-tauri/tauri.conf.json"
+        required: false
+        type: string
+      draft:
+        description: "Создать релиз как черновик (Draft release)"
+        required: true
+        default: true
+        type: boolean
+      description:
+        description: "Описание релиза (попадет в GitHub Release и latest.json)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Resolve release version
+        id: meta
+        shell: pwsh
+        run: |
+          $cfg = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          $inputVersion = "${{ github.event.inputs.version }}".Trim()
+          if ([string]::IsNullOrWhiteSpace($inputVersion)) {
+            $version = $cfg.version
+          } else {
+            $version = $inputVersion
+          }
+          if (-not ($version -match '^\d+\.\d+\.\d+([\-+].+)?$')) {
+            throw "Некорректная версия: $version"
+          }
+          $tag = "v$version"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Release version: $version"
+          Write-Host "Tag: $tag"
+
+      - name: Build portable EXE (Tauri)
+        run: npm run tauri build -- --no-bundle
+
+      - name: Prepare release assets
+        id: assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ steps.meta.outputs.version }}"
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $repo = "${{ github.repository }}"
+          $releaseNotes = @"
+${{ github.event.inputs.description }}
+"@.Trim()
+          $assetDir = "release-assets"
+          $exeSource = "src-tauri\target\release\zprt-app.exe"
+          $exeName = "zprt-app.exe"
+
+          if (-not (Test-Path $exeSource)) {
+            throw "Не найден файл $exeSource"
+          }
+
+          New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
+          Copy-Item $exeSource (Join-Path $assetDir $exeName) -Force
+
+          $exePath = Join-Path $assetDir $exeName
+          $hash = (Get-FileHash -Path $exePath -Algorithm SHA256).Hash.ToLower()
+
+          $downloadUrl = "https://github.com/$repo/releases/download/$tag/$exeName"
+          $notesJson = $releaseNotes | ConvertTo-Json -Compress
+
+          @"
+          {
+            "version": "$version",
+            "url": "$downloadUrl",
+            "sha256": "$hash",
+            "notes": $notesJson
+          }
+          "@ | Set-Content -Path (Join-Path $assetDir "latest.json") -Encoding utf8
+
+          "$hash  *$exeName" | Set-Content -Path (Join-Path $assetDir "SHA256SUMS.txt") -Encoding ascii
+
+          "asset_dir=$assetDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Create GitHub Release (draft optional)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ZPRT App ${{ steps.meta.outputs.version }}
+          draft: ${{ github.event.inputs.draft == 'true' }}
+          body: ${{ github.event.inputs.description }}
+          generate_release_notes: ${{ github.event.inputs.description == '' }}
+          files: |
+            ${{ steps.assets.outputs.asset_dir }}/zprt-app.exe
+            ${{ steps.assets.outputs.asset_dir }}/latest.json
+            ${{ steps.assets.outputs.asset_dir }}/SHA256SUMS.txt
