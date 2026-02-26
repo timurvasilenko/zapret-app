@@ -1,36 +1,35 @@
-﻿# ZPRT App
+# ZPRT App
 
-Tauri + React wrapper around `zapret-discord-youtube` with no modifications to zapret files (except editable `lists/*`).
+ZPRT App - это приложение для Windows, созданное для упрощённого использования инструмента `zapret-discord-youtube` (далее - `zapret`) через окно настроек и трей-меню.
 
-## Implemented
+## Что умеет программа
 
-- Latest release check/install from GitHub (`zapret-discord-youtube-*.zip`)
-- Installed version switcher (`zapret/<version>`)
-- Dynamic strategy discovery from `general*.bat`
-- Start/stop bypass (runs selected strategy)
-- Attempted auto-hide of `winws.exe` console windows
-- Windows autostart toggle via `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`
-- Built-in editors for:
-  - `lists/list-general.txt`
-  - `lists/list-exclude.txt`
-- Tray icon with menu actions: open/start/stop/quit
-- Close-to-tray behavior
+- Запуск и остановка обхода
+- Переключение стратегии
+- Автоматический поиск обновлений `zapret`, установка последней версии одной кнопкой
+- Переключение между установленными версиями `zapret`
+- Управление пользовательскими списками (домены, IP, исключения) с автоматическим применением к любой выбранной версии `zapret`
+- Управление часто используемыми функциями `zapret` через значок в трее (иконка в панели задач) с отображением текущего состояния выбранной стратегии (запущена/остановлена) на иконке
+- Автозапуск приложения вместе с Windows
 
-## Project Structure
+## Как пользоваться
 
-- `src/` - React UI
-- `src-tauri/src/lib.rs` - app backend logic and Tauri commands
-- `zapret/` - installed tool versions (`zapret/<version>`)
-- `zprt-app-config.json` - local app config next to app executable (or project root in debug)
+1. Создать папку в любом удобном месте и скопировать в неё zprt-app.exe
+2. Запустить `zprt-app.exe` **от имени администратора**
+3. В открывшемся окне перейти на вкладкку `Версии` и установить актуальную версию `zapret`
+4. На вкладке `Управление` выберать стратегию
+5. Нажать `Запустить`
+6. Окно настроек можно закрыть, программа останется запущенной. Для открытия данного окна нужно кликнуть на иконку в трее (правый нижний угол в панели задач Windows).
+7. Для быстрого управления стратегиями без открытия основогоно окна можно нажать правой кнопкой мыши на иконку в трее. 
+8. По умолчанию иконка расположена не на панели задач, а в скрытом меню. Для удобства можно закрепить её на панели задач - зажать левую кнопку мыши на иконке и перенести на панель задач.
 
-## Run
+## Файлы/папки, которые программа создаёт автоматически и использует для своей работы
 
-```bash
-npm install
-npm run tauri dev
-```
+Рядом с `zprt-app.exe` программа создаёт и использует:
+- `zapret` - папка с установленными версиями `zapret`
+- `user-lists` - пользовательские списки доменов и исключений
+- `zprt-app-config.json` - файл конфигурации программы ZPRT App
 
-## Notes
+## Где скачать последнюю версию программы
 
-- This repository currently has no Rust toolchain in the environment where code was generated, so `cargo check` was not executed here.
-- Frontend build was validated with `npm run build`.
+Последнюю версию `ZPRT App` можно скачать в разделе `Releases` данного репозитория.
