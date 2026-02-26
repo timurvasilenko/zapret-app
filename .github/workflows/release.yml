@@ -71,14 +71,14 @@ jobs:
       - name: Prepare release assets
         id: assets
         shell: pwsh
+        env:
+          RELEASE_DESCRIPTION: ${{ github.event.inputs.description }}
         run: |
           $ErrorActionPreference = "Stop"
           $version = "${{ steps.meta.outputs.version }}"
           $tag = "${{ steps.meta.outputs.tag }}"
           $repo = "${{ github.repository }}"
-          $releaseNotes = @"
-${{ github.event.inputs.description }}
-"@.Trim()
+          $releaseNotes = "$env:RELEASE_DESCRIPTION".Trim()
           $assetDir = "release-assets"
           $exeSource = "src-tauri\target\release\zprt-app.exe"
           $exeName = "zprt-app.exe"
