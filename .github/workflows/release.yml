@@ -13,7 +13,7 @@ on:
         default: true
         type: boolean
       description:
-        description: "Описание релиза (попадет в GitHub Release и latest.json)"
+        description: "Описание релиза (попадет в GitHub Release и release-info.json)"
         required: false
         type: string
 
@@ -103,7 +103,7 @@ jobs:
             "sha256": "$hash",
             "notes": $notesJson
           }
-          "@ | Set-Content -Path (Join-Path $assetDir "latest.json") -Encoding utf8
+          "@ | Set-Content -Path (Join-Path $assetDir "release-info.json") -Encoding utf8
 
           "$hash  *$exeName" | Set-Content -Path (Join-Path $assetDir "SHA256SUMS.txt") -Encoding ascii
 
@@ -120,5 +120,5 @@ jobs:
           generate_release_notes: ${{ github.event.inputs.description == '' }}
           files: |
             ${{ steps.assets.outputs.asset_dir }}/zprt-app.exe
-            ${{ steps.assets.outputs.asset_dir }}/latest.json
+            ${{ steps.assets.outputs.asset_dir }}/release-info.json
             ${{ steps.assets.outputs.asset_dir }}/SHA256SUMS.txt
