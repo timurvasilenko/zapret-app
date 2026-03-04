@@ -8,10 +8,7 @@ import { useTranslation } from "react-i18next";
 import coolImage from "./img/cool.jpg";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
   CardDescription,
-  CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import {
@@ -24,6 +21,7 @@ import {
 } from "@/components/ui/command";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -288,7 +286,7 @@ function MainApp() {
   }
 
   return (
-    <main className="relative min-h-screen bg-background px-3 py-3 text-foreground">
+    <main className="relative h-screen overflow-hidden bg-background text-foreground">
       <Toaster theme="dark" richColors position="top-right" duration={3800} />
       {showEasterEgg && (
         <div className="pointer-events-none fixed inset-0 z-[5000] bg-black">
@@ -296,8 +294,9 @@ function MainApp() {
         </div>
       )}
 
-      <div className="mx-auto max-w-3xl">
-        <header className="mb-3 flex items-center justify-between">
+      <div className="flex h-full min-h-0 flex-col">
+        <header className="shrink-0 border-b border-border px-4 py-3">
+          <div className="flex items-center justify-between">
           <h1
             onClick={handleTitleClick}
             className="cursor-pointer select-none text-2xl font-semibold tracking-tight"
@@ -314,14 +313,18 @@ function MainApp() {
               {statusLabel}
             </span>
           </div>
+          </div>
         </header>
 
         <Tabs
           value={tab}
           onValueChange={(value) => setTab(value as Tab)}
-          className="w-full"
+          className="flex min-h-0 flex-1 flex-col"
         >
-          <TabsList variant="line" className="mb-3 w-full justify-start">
+          <TabsList
+            variant="line"
+            className="mx-4 my-3 w-auto shrink-0 justify-start"
+          >
             <TabsTrigger
               value="control"
               disabled={busy || savingLists || !hasInstalledVersions}
@@ -352,13 +355,14 @@ function MainApp() {
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="control">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("control.title")}</CardTitle>
-                <CardDescription>{t("control.description")}</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
+          <div className="min-h-0 flex-1 border-t border-border bg-card">
+            <TabsContent value="control" className="m-0 h-full">
+              <ScrollArea className="h-full">
+                <div className="space-y-4 p-4">
+                  <div className="space-y-1">
+                    <CardTitle>{t("control.title")}</CardTitle>
+                    <CardDescription>{t("control.description")}</CardDescription>
+                  </div>
                 <div className="space-y-2">
                   <Label>{t("control.strategy")}</Label>
                   <Popover
@@ -498,17 +502,17 @@ function MainApp() {
                 >
                   {t("control.openService")}
                 </Button>
-              </CardContent>
-            </Card>
-          </TabsContent>
+                </div>
+              </ScrollArea>
+            </TabsContent>
 
-          <TabsContent value="lists">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("lists.title")}</CardTitle>
-                <CardDescription>{t("lists.description")}</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            <TabsContent value="lists" className="m-0 h-full">
+              <ScrollArea className="h-full">
+                <div className="space-y-4 p-4">
+                  <div className="space-y-1">
+                    <CardTitle>{t("lists.title")}</CardTitle>
+                    <CardDescription>{t("lists.description")}</CardDescription>
+                  </div>
                 <div className="space-y-2">
                   <Label>{t("lists.listLabel")}</Label>
                   <Select
@@ -557,17 +561,17 @@ function MainApp() {
                 >
                   {t("lists.save")}
                 </Button>
-              </CardContent>
-            </Card>
-          </TabsContent>
+                </div>
+              </ScrollArea>
+            </TabsContent>
 
-          <TabsContent value="versions">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("versions.title")}</CardTitle>
-                <CardDescription>{t("versions.description")}</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            <TabsContent value="versions" className="m-0 h-full">
+              <ScrollArea className="h-full">
+                <div className="space-y-4 p-4">
+                  <div className="space-y-1">
+                    <CardTitle>{t("versions.title")}</CardTitle>
+                    <CardDescription>{t("versions.description")}</CardDescription>
+                  </div>
                 <div className="grid gap-2 rounded-lg border border-border bg-muted/30 p-3 text-sm">
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-muted-foreground">{t("versions.current")}:</span>
@@ -657,9 +661,10 @@ function MainApp() {
                     }
                   />
                 </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
+                </div>
+              </ScrollArea>
+            </TabsContent>
+          </div>
         </Tabs>
       </div>
     </main>

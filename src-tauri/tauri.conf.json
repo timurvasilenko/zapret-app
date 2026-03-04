@@ -14,10 +14,10 @@
             {
                 "title": "ZPRT App",
                 "width": 500,
-                "height": 500,
+                "height": 630,
                 "minWidth": 500,
-                "minHeight": 500,
-                "resizable": true
+                "minHeight": 630,
+                "resizable": false
             }
         ],
         "security": {
