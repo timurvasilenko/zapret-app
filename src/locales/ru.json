@@ -2,8 +2,11 @@
     "__meta": {
         "encoding_note": "ВНИМАНИЕ: после каждой правки этого файла обязательно перепроверяй, что кодировка осталась UTF-8 и кириллица отображается корректно."
     },
+    "app": {
+        "title": "Управление обходом"
+    },
     "tabs": {
-        "control": "Управление",
+        "control": "Стратегии и запуск",
         "lists": "Списки доменов",
         "versions": "Версии"
     },
@@ -12,21 +15,21 @@
         "running": "Запущен",
         "stopped": "Остановлен"
     },
-  "control": {
-    "description": "Выберите стратегию, затем запускайте или останавливайте обход.",
-        "strategy": "Стратегия",
+    "control": {
+        "description": "Выбор стратегии, запуск и останавка обхода.",
+        "strategy": "Стратегия обхода",
         "selectStrategy": "Выберите стратегию",
-    "searchStrategy": "Поиск стратегии...",
-    "noStrategyFound": "Ничего не найдено",
-    "start": "Запустить",
-    "restart": "Перезапустить",
-    "stop": "Остановить",
-    "autostart": "Запускать ZPRT App вместе с Windows",
-    "openService": "Открыть service",
-    "openBypassFolder": "Открыть папку обхода ({{version}})"
+        "searchStrategy": "Поиск стратегии...",
+        "noStrategyFound": "Ничего не найдено",
+        "start": "Запустить",
+        "restart": "Перезапустить",
+        "stop": "Остановить",
+        "autostart": "Запускать ZPRT App и стратегию вместе с Windows",
+        "openService": "Открыть service",
+        "openBypassFolder": "Открыть папку обхода ({{version}})"
     },
-  "lists": {
-    "description": "Редактируйте пользовательские списки. Изменения применятся после перезапуска стратегии.",
+    "lists": {
+        "description": "Редактор пользовательских списков. Изменения применяются после перезапуска стратегии.",
         "listLabel": "Список",
         "general": "Домены",
         "excludeDomains": "Домены (исключения)",
@@ -38,8 +41,8 @@
             "excludeIps": "Список IP-адресов-исключений"
         }
     },
-  "versions": {
-    "description": "Установка, проверка обновлений и выбор активной версии zapret.",
+    "versions": {
+        "description": "Установка, проверка обновлений и выбор активной версии обхода.",
         "current": "Текущая",
         "latest": "Последняя",
         "none": "не выбрана",
@@ -47,6 +50,7 @@
         "update": "Обновить",
         "install": "Установить",
         "checkUpdates": "Проверить обновления",
+        "releaseInfo": "О релизе",
         "versionSelectLabel": "Выбор версии обхода",
         "selectVersion": "Выберите версию",
         "notify": "Уведомлять о наличии новой версии zapret"
@@ -56,13 +60,13 @@
         "listSaved": "Список сохранен",
         "updateAvailable": "Доступна новая версия",
         "latestInstalled": "Установлена последняя версия",
-    "newUtilityVersion": "Доступна новая версия утилиты",
-    "bypassStarted": "Обход запущен",
-    "bypassRestarted": "Обход перезапущен",
-    "bypassStopped": "Обход остановлен",
-    "autostartOn": "Автозапуск включен",
-    "autostartOff": "Автозапуск выключен",
-    "latestVersionInstalled": "Последняя версия установлена",
+        "newUtilityVersion": "Доступна новая версия утилиты",
+        "bypassStarted": "Обход запущен",
+        "bypassRestarted": "Обход перезапущен",
+        "bypassStopped": "Обход остановлен",
+        "autostartOn": "Автозапуск включен",
+        "autostartOff": "Автозапуск выключен",
+        "latestVersionInstalled": "Последняя версия установлена",
         "versionInstalled": "Версия установлена",
         "currentVersionChanged": "Текущая версия изменена",
         "notificationsOn": "Уведомления об обновлениях включены",

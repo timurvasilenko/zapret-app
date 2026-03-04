@@ -1,6 +1,7 @@
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT};
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Write};
@@ -28,6 +29,8 @@ use std::os::windows::process::CommandExt;
 const CONFIG_FILE: &str = "zprt-app-config.json";
 const REPO_LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest";
+const REPO_RELEASE_BY_TAG_URL_PREFIX: &str =
+    "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/tags/";
 const ASSET_PREFIX: &str = "zapret-discord-youtube-";
 const AUTOSTART_TASK_NAME: &str = "ZPRT App Autostart";
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -85,6 +88,7 @@ struct UiState {
     installed_versions: Vec<String>,
     active_version: Option<String>,
     latest_version: Option<String>,
+    latest_release_url: Option<String>,
     update_available: bool,
     update_notification_needed: bool,
     strategies: Vec<String>,
@@ -100,6 +104,7 @@ struct UiState {
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     tag_name: String,
+    html_url: Option<String>,
     assets: Vec<GithubAsset>,
 }
 
@@ -252,8 +257,71 @@ fn list_strategies_for_version(version: &str) -> Result<Vec<String>, String> {
         }
     }
 
-    strategies.sort();
+    strategies.sort_by(|a, b| natural_sort_cmp(a, b));
     Ok(strategies)
+}
+
+fn natural_sort_cmp(left: &str, right: &str) -> Ordering {
+    let left_bytes = left.as_bytes();
+    let right_bytes = right.as_bytes();
+    let mut i = 0usize;
+    let mut j = 0usize;
+
+    while i < left_bytes.len() && j < right_bytes.len() {
+        let lc = left_bytes[i];
+        let rc = right_bytes[j];
+
+        if lc.is_ascii_digit() && rc.is_ascii_digit() {
+            let start_i = i;
+            let start_j = j;
+
+            while i < left_bytes.len() && left_bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            while j < right_bytes.len() && right_bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+
+            let left_num = &left[start_i..i];
+            let right_num = &right[start_j..j];
+            let left_trim = left_num.trim_start_matches('0');
+            let right_trim = right_num.trim_start_matches('0');
+
+            let left_norm = if left_trim.is_empty() { "0" } else { left_trim };
+            let right_norm = if right_trim.is_empty() { "0" } else { right_trim };
+
+            match left_norm.len().cmp(&right_norm.len()) {
+                Ordering::Less => return Ordering::Less,
+                Ordering::Greater => return Ordering::Greater,
+                Ordering::Equal => match left_norm.cmp(right_norm) {
+                    Ordering::Less => return Ordering::Less,
+                    Ordering::Greater => return Ordering::Greater,
+                    Ordering::Equal => {}
+                },
+            }
+
+            match left_num.len().cmp(&right_num.len()) {
+                Ordering::Less => return Ordering::Less,
+                Ordering::Greater => return Ordering::Greater,
+                Ordering::Equal => {}
+            }
+
+            continue;
+        }
+
+        let lc_lower = lc.to_ascii_lowercase();
+        let rc_lower = rc.to_ascii_lowercase();
+        match lc_lower.cmp(&rc_lower) {
+            Ordering::Less => return Ordering::Less,
+            Ordering::Greater => return Ordering::Greater,
+            Ordering::Equal => {
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+
+    left_bytes.len().cmp(&right_bytes.len())
 }
 
 fn zapret_list_file_paths(config: &AppConfig) -> Result<(PathBuf, PathBuf, PathBuf), String> {
@@ -434,6 +502,38 @@ async fn fetch_latest_release() -> Result<GithubRelease, String> {
     }
 }
 
+async fn fetch_release_by_tag(tag: &str) -> Result<GithubRelease, String> {
+    let url = format!("{REPO_RELEASE_BY_TAG_URL_PREFIX}{tag}");
+    let response = github_client()?
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub API error for tag {tag}: {}",
+            response.status()
+        ));
+    }
+
+    response
+        .json::<GithubRelease>()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn open_in_browser(target: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", target])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn pick_zip_asset(release: &GithubRelease) -> Result<&GithubAsset, String> {
     release
         .assets
@@ -548,7 +648,11 @@ async fn fetch_latest_release_via_html() -> Result<GithubRelease, String> {
     let mut assets = parse_assets_from_release_html(&html);
     ensure_fallback_zip_assets(&tag_name, &mut assets);
 
-    Ok(GithubRelease { tag_name, assets })
+    Ok(GithubRelease {
+        html_url: Some(resolved_url),
+        tag_name,
+        assets,
+    })
 }
 
 fn extract_zip_to_dir(zip_bytes: &[u8], destination: &Path) -> Result<(), String> {
@@ -772,7 +876,10 @@ async fn build_ui_state() -> Result<UiState, String> {
     let (list_general_user, list_exclude_user, ipset_exclude_user) = read_user_list_files()?;
 
     let latest = fetch_latest_release().await.ok();
-    let latest_version = latest.map(|r| normalize_version(&r.tag_name));
+    let latest_version = latest
+        .as_ref()
+        .map(|r| normalize_version(&r.tag_name));
+    let latest_release_url = latest.as_ref().and_then(|r| r.html_url.clone());
 
     let newest_installed = installed_versions.first().cloned();
     let update_available = match (&newest_installed, &latest_version) {
@@ -794,6 +901,7 @@ async fn build_ui_state() -> Result<UiState, String> {
         installed_versions,
         active_version: config.active_version,
         latest_version,
+        latest_release_url,
         update_available,
         update_notification_needed,
         strategies,
@@ -961,6 +1069,34 @@ async fn open_active_version_folder() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[tauri::command]
+async fn open_external_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("Unsupported URL".to_string());
+    }
+    open_in_browser(&url)
+}
+
+#[tauri::command]
+async fn open_release_info_for_version(version: String) -> Result<(), String> {
+    let normalized = normalize_version(&version);
+    let tags = [normalized.clone(), format!("v{normalized}")];
+
+    for tag in tags {
+        if let Ok(release) = fetch_release_by_tag(&tag).await {
+            let url = release.html_url.unwrap_or_else(|| {
+                format!(
+                    "https://github.com/Flowseal/zapret-discord-youtube/releases/tag/{}",
+                    release.tag_name
+                )
+            });
+            return open_in_browser(&url);
+        }
+    }
+
+    Err(format!("Release info not found for version: {version}"))
 }
 
 #[tauri::command]
@@ -1466,6 +1602,8 @@ pub fn run() {
             set_autostart,
             open_service_bat,
             open_active_version_folder,
+            open_external_url,
+            open_release_info_for_version,
             set_update_notifications_enabled,
             hide_update_toast,
             open_main_versions_from_toast,

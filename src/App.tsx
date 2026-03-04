@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { CaretUpDownIcon, XIcon } from "@phosphor-icons/react";
+import { ArrowSquareOutIcon, CaretUpDownIcon, XIcon } from "@phosphor-icons/react";
 import { Toaster, toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import coolImage from "./img/cool.jpg";
@@ -38,6 +38,7 @@ type AppState = {
   installedVersions: string[];
   activeVersion: string | null;
   latestVersion: string | null;
+  latestReleaseUrl: string | null;
   updateAvailable: boolean;
   updateNotificationNeeded: boolean;
   strategies: string[];
@@ -58,6 +59,7 @@ const emptyState: AppState = {
   installedVersions: [],
   activeVersion: null,
   latestVersion: null,
+  latestReleaseUrl: null,
   updateAvailable: false,
   updateNotificationNeeded: false,
   strategies: [],
@@ -140,7 +142,7 @@ function UpdateToastView() {
           </button>
           <div className="flex items-center gap-2 pr-7 text-[10px] font-semibold uppercase tracking-wide text-primary">
             <span className="size-1.5 rounded-full bg-primary" />
-            ZPRT App
+            {t("app.title")}
           </div>
           <div className="line-clamp-2 pr-7 text-sm leading-snug text-foreground">
             {text}
@@ -368,7 +370,7 @@ function MainApp() {
             onClick={handleTitleClick}
             className="cursor-pointer select-none text-2xl font-semibold tracking-tight"
           >
-            ZPRT App
+            {t("app.title")}
           </h1>
           <div className="rounded-md border border-border bg-card px-2 py-1 text-xs text-muted-foreground">
             {t("status.label")}:{" "}
@@ -640,18 +642,62 @@ function MainApp() {
               <ScrollArea className="h-full">
                 <div className="space-y-4 p-4">
                   <CardDescription>{t("versions.description")}</CardDescription>
-                <div className="grid gap-2 rounded-lg border border-border bg-muted/30 p-3 text-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">{t("versions.current")}:</span>
-                    <span className="font-medium">
-                      {state.activeVersion ?? t("versions.none")}
-                    </span>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-lg border border-border bg-muted/20 p-3">
+                    <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                      {t("versions.current")}
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                      <div className="truncate pr-1 text-base font-semibold">
+                        {state.activeVersion ?? t("versions.none")}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        className="shrink-0"
+                        disabled={busy || !state.activeVersion}
+                        onClick={() =>
+                          invoke("open_release_info_for_version", {
+                            version: state.activeVersion,
+                          }).catch((error) => showToast(String(error), "error"))
+                        }
+                      >
+                        <ArrowSquareOutIcon className="size-3.5" />
+                        {t("versions.releaseInfo")}
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">{t("versions.latest")}:</span>
-                    <span className="font-medium">
-                      {state.latestVersion ?? t("versions.unknown")}
-                    </span>
+                  <div
+                    className={
+                      state.updateAvailable
+                        ? "rounded-lg border border-amber-500/60 bg-amber-500/10 p-3"
+                        : "rounded-lg border border-border bg-muted/20 p-3"
+                    }
+                  >
+                    <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                      {t("versions.latest")}
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                      <div className="truncate pr-1 text-base font-semibold">
+                        {state.latestVersion ?? t("versions.unknown")}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        className="shrink-0"
+                        disabled={busy || !state.latestReleaseUrl}
+                        onClick={() =>
+                          state.latestReleaseUrl
+                            ? invoke("open_external_url", {
+                                url: state.latestReleaseUrl,
+                              }).catch((error) => showToast(String(error), "error"))
+                            : undefined
+                        }
+                      >
+                        <ArrowSquareOutIcon className="size-3.5" />
+                        {t("versions.releaseInfo")}
+                      </Button>
+                    </div>
                   </div>
                 </div>
 
