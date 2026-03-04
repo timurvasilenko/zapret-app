@@ -895,6 +895,7 @@ async fn select_strategy(app: AppHandle, strategy: String) -> Result<(), String>
 async fn start_bypass(app: AppHandle) -> Result<(), String> {
     start_strategy_impl()?;
     set_tray_icon_for_state(&app, true);
+    apply_tray_menu_state(&app, true);
     emit_bypass_state_changed(&app);
     Ok(())
 }
@@ -903,6 +904,7 @@ async fn start_bypass(app: AppHandle) -> Result<(), String> {
 async fn stop_bypass(app: AppHandle) -> Result<(), String> {
     stop_strategy_impl()?;
     set_tray_icon_for_state(&app, false);
+    apply_tray_menu_state(&app, false);
     emit_bypass_state_changed(&app);
     Ok(())
 }
@@ -1195,21 +1197,48 @@ fn build_tray_strategy_submenu(app: &AppHandle) -> Result<Submenu<tauri::Wry>, t
 }
 
 fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error> {
+    build_tray_menu_for_state(app, is_winws_running())
+}
+
+fn build_tray_menu_for_state(
+    app: &AppHandle,
+    is_running: bool,
+) -> Result<Menu<tauri::Wry>, tauri::Error> {
     let show_item = MenuItem::with_id(app, "show", "Открыть ZPRT App", true, None::<&str>)?;
     let start_item = MenuItem::with_id(app, "start", "Запустить обход", true, None::<&str>)?;
+    let restart_item =
+        MenuItem::with_id(app, "restart", "Перезапустить обход", true, None::<&str>)?;
     let stop_item = MenuItem::with_id(app, "stop", "Остановить обход", true, None::<&str>)?;
     let strategy_submenu = build_tray_strategy_submenu(app)?;
     let quit_item = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
 
-    Menu::with_items(
-        app,
-        &[&show_item, &start_item, &stop_item, &strategy_submenu, &quit_item],
-    )
+    if is_running {
+        Menu::with_items(
+            app,
+            &[
+                &show_item,
+                &restart_item,
+                &stop_item,
+                &strategy_submenu,
+                &quit_item,
+            ],
+        )
+    } else {
+        Menu::with_items(app, &[&show_item, &start_item, &strategy_submenu, &quit_item])
+    }
 }
 
 fn refresh_tray_menu(app: &AppHandle) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         if let Ok(menu) = build_tray_menu(app) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+}
+
+fn apply_tray_menu_state(app: &AppHandle, is_running: bool) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        if let Ok(menu) = build_tray_menu_for_state(app, is_running) {
             let _ = tray.set_menu(Some(menu));
         }
     }
@@ -1268,16 +1297,31 @@ fn setup_tray(app: &AppHandle) -> Result<(), tauri::Error> {
                 "start" => {
                     if start_strategy_impl().is_ok() {
                         set_tray_icon_for_state(app, true);
+                        apply_tray_menu_state(app, true);
                     } else {
                         set_tray_icon_for_state(app, is_winws_running());
+                        refresh_tray_menu(app);
+                    }
+                    emit_bypass_state_changed(app);
+                }
+                "restart" => {
+                    let restarted = stop_strategy_impl().is_ok() && start_strategy_impl().is_ok();
+                    if restarted {
+                        set_tray_icon_for_state(app, true);
+                        apply_tray_menu_state(app, true);
+                    } else {
+                        set_tray_icon_for_state(app, is_winws_running());
+                        refresh_tray_menu(app);
                     }
                     emit_bypass_state_changed(app);
                 }
                 "stop" => {
                     if stop_strategy_impl().is_ok() {
                         set_tray_icon_for_state(app, false);
+                        apply_tray_menu_state(app, false);
                     } else {
                         set_tray_icon_for_state(app, is_winws_running());
+                        refresh_tray_menu(app);
                     }
                     emit_bypass_state_changed(app);
                 }
@@ -1338,6 +1382,7 @@ pub fn run() {
                 }
                 let _ = start_strategy_impl();
                 set_tray_icon_for_state(app.handle(), true);
+                apply_tray_menu_state(app.handle(), true);
                 emit_bypass_state_changed(app.handle());
             }
 

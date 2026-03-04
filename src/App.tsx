@@ -2,573 +2,673 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { CaretUpDownIcon } from "@phosphor-icons/react";
+import { Toaster, toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import coolImage from "./img/cool.jpg";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 
 type AppState = {
-    installedVersions: string[];
-    activeVersion: string | null;
-    latestVersion: string | null;
-    updateAvailable: boolean;
-    strategies: string[];
-    selectedStrategy: string | null;
-    isRunning: boolean;
-    autostartEnabled: boolean;
-    notifyUpdateAvailable: boolean;
-    listGeneralUser: string;
-    listExcludeUser: string;
-    ipsetExcludeUser: string;
+  installedVersions: string[];
+  activeVersion: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  strategies: string[];
+  selectedStrategy: string | null;
+  isRunning: boolean;
+  autostartEnabled: boolean;
+  notifyUpdateAvailable: boolean;
+  listGeneralUser: string;
+  listExcludeUser: string;
+  ipsetExcludeUser: string;
 };
 
 type Tab = "control" | "lists" | "versions";
 type ToastType = "success" | "error" | "info";
 type UserListKey = "general" | "excludeDomains" | "excludeIps";
 
-type Toast = {
-    id: number;
-    text: string;
-    type: ToastType;
-};
-
 const emptyState: AppState = {
-    installedVersions: [],
-    activeVersion: null,
-    latestVersion: null,
-    updateAvailable: false,
-    strategies: [],
-    selectedStrategy: null,
-    isRunning: false,
-    autostartEnabled: false,
-    notifyUpdateAvailable: true,
-    listGeneralUser: "",
-    listExcludeUser: "",
-    ipsetExcludeUser: "",
+  installedVersions: [],
+  activeVersion: null,
+  latestVersion: null,
+  updateAvailable: false,
+  strategies: [],
+  selectedStrategy: null,
+  isRunning: false,
+  autostartEnabled: false,
+  notifyUpdateAvailable: true,
+  listGeneralUser: "",
+  listExcludeUser: "",
+  ipsetExcludeUser: "",
 };
-
-function UpdateToastView() {
-    const [text, setText] = useState("Доступна новая версия zapret");
-
-    useEffect(() => {
-        const win = getCurrentWebviewWindow();
-        let unlisten: (() => void) | undefined;
-
-        win.listen<string>("update-toast-message", (event) => {
-            setText(event.payload);
-        })
-            .then((dispose) => {
-                unlisten = dispose;
-            })
-            .catch(() => {});
-
-        return () => {
-            if (unlisten) {
-                unlisten();
-            }
-        };
-    }, []);
-
-    return (
-        <div className="update-toast-window">
-            <div className="update-toast-card">
-                <div className="update-toast-title">ZPRT App</div>
-                <div className="update-toast-body">{text}</div>
-            </div>
-        </div>
-    );
-}
 
 function getListValue(state: AppState, key: UserListKey): string {
-    if (key === "general") return state.listGeneralUser;
-    if (key === "excludeDomains") return state.listExcludeUser;
-    return state.ipsetExcludeUser;
+  if (key === "general") return state.listGeneralUser;
+  if (key === "excludeDomains") return state.listExcludeUser;
+  return state.ipsetExcludeUser;
+}
+
+function formatStrategyName(strategy: string): string {
+  return strategy.replace(/\.bat$/i, "");
+}
+
+function UpdateToastView() {
+  const { t } = useTranslation();
+  const [text, setText] = useState(t("toasts.newZapretVersion"));
+
+  useEffect(() => {
+    const win = getCurrentWebviewWindow();
+    let unlisten: (() => void) | undefined;
+
+    win
+      .listen<string>("update-toast-message", (event) => {
+        setText(event.payload);
+      })
+      .then((dispose) => {
+        unlisten = dispose;
+      })
+      .catch(() => {});
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
+  return (
+    <div className="h-screen w-screen bg-transparent p-0">
+      <div className="h-full w-full rounded-xl border border-[#fcce03b3] bg-[#09111cf5] p-4 shadow-2xl">
+        <div className="text-sm font-bold text-[#fcce03]">ZPRT App</div>
+        <div className="mt-2 text-sm leading-relaxed text-slate-100">{text}</div>
+      </div>
+    </div>
+  );
+}
+
+function MainApp() {
+  const { t } = useTranslation();
+  const [state, setState] = useState<AppState>(emptyState);
+  const [tab, setTab] = useState<Tab>("control");
+  const [busy, setBusy] = useState(false);
+  const [savingLists, setSavingLists] = useState(false);
+  const [strategyPickerOpen, setStrategyPickerOpen] = useState(false);
+  const [showEasterEgg, setShowEasterEgg] = useState(false);
+  const [titleClickCount, setTitleClickCount] = useState(0);
+  const [selectedListKey, setSelectedListKey] =
+    useState<UserListKey>("general");
+  const [savedLists, setSavedLists] = useState<Record<UserListKey, string>>({
+    general: "",
+    excludeDomains: "",
+    excludeIps: "",
+  });
+
+  const startupUpdateToastShown = useRef(false);
+  const easterEggTimeoutRef = useRef<number | null>(null);
+
+  const hasInstalledVersions = state.installedVersions.length > 0;
+  const selectedListValue = getListValue(state, selectedListKey);
+  const selectedListDirty = selectedListValue !== savedLists[selectedListKey];
+
+  const statusLabel = useMemo(
+    () => (state.isRunning ? t("status.running") : t("status.stopped")),
+    [state.isRunning, t]
+  );
+
+  function showToast(text: string, type: ToastType = "info") {
+    if (type === "success") {
+      toast.success(text);
+      return;
+    }
+    if (type === "error") {
+      toast.error(text);
+      return;
+    }
+    toast(text);
+  }
+
+  async function load() {
+    const next = await invoke<AppState>("load_app_state");
+    setState(next);
+    setSavedLists({
+      general: next.listGeneralUser,
+      excludeDomains: next.listExcludeUser,
+      excludeIps: next.ipsetExcludeUser,
+    });
+  }
+
+  function setListValue(key: UserListKey, value: string) {
+    setState((prev) => {
+      if (key === "general") return { ...prev, listGeneralUser: value };
+      if (key === "excludeDomains") return { ...prev, listExcludeUser: value };
+      return { ...prev, ipsetExcludeUser: value };
+    });
+  }
+
+  async function saveSelectedList(showSuccessToast = true) {
+    const content = getListValue(state, selectedListKey);
+    if (savedLists[selectedListKey] === content) {
+      return;
+    }
+
+    setSavingLists(true);
+    try {
+      await invoke("save_user_list_file", {
+        listKind: selectedListKey,
+        content,
+      });
+      setSavedLists((prev) => ({ ...prev, [selectedListKey]: content }));
+      if (showSuccessToast) {
+        showToast(t("toasts.listSaved"), "success");
+      }
+    } catch (error) {
+      showToast(String(error), "error");
+    } finally {
+      setSavingLists(false);
+    }
+  }
+
+  async function runAction(action: () => Promise<void>, okMessage?: string) {
+    setBusy(true);
+    try {
+      await action();
+      await load();
+      if (okMessage) {
+        showToast(okMessage, "success");
+      }
+    } catch (error) {
+      showToast(String(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function checkUpdatesAction() {
+    setBusy(true);
+    try {
+      const next = await invoke<AppState>("refresh_release_info");
+      setState(next);
+      if (next.updateAvailable) {
+        showToast(t("toasts.updateAvailable"), "info");
+      } else {
+        showToast(t("toasts.latestInstalled"), "success");
+      }
+    } catch (error) {
+      showToast(String(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    load().catch((error) => showToast(String(error), "error"));
+
+    let unlisten: (() => void) | undefined;
+    listen("bypass-state-changed", () => {
+      load().catch((error) => showToast(String(error), "error"));
+    })
+      .then((dispose) => {
+        unlisten = dispose;
+      })
+      .catch((error) => {
+        showToast(String(error), "error");
+      });
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!startupUpdateToastShown.current && state.updateAvailable) {
+      startupUpdateToastShown.current = true;
+      showToast(t("toasts.newUtilityVersion"), "info");
+    }
+  }, [state.updateAvailable, t]);
+
+  useEffect(() => {
+    if (!hasInstalledVersions && tab !== "versions") {
+      setTab("versions");
+    }
+  }, [hasInstalledVersions, tab]);
+
+  useEffect(() => {
+    return () => {
+      if (easterEggTimeoutRef.current !== null) {
+        window.clearTimeout(easterEggTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  function handleTitleClick() {
+    setTitleClickCount((prev) => {
+      const next = prev + 1;
+      if (next >= 10) {
+        setShowEasterEgg(true);
+        if (easterEggTimeoutRef.current !== null) {
+          window.clearTimeout(easterEggTimeoutRef.current);
+        }
+        easterEggTimeoutRef.current = window.setTimeout(() => {
+          setShowEasterEgg(false);
+          easterEggTimeoutRef.current = null;
+        }, 5000);
+        return 0;
+      }
+      return next;
+    });
+  }
+
+  return (
+    <main className="relative min-h-screen bg-background px-3 py-3 text-foreground">
+      <Toaster theme="dark" richColors position="top-right" duration={3800} />
+      {showEasterEgg && (
+        <div className="pointer-events-none fixed inset-0 z-[5000] bg-black">
+          <img src={coolImage} alt="" className="h-screen w-screen object-fill" />
+        </div>
+      )}
+
+      <div className="mx-auto max-w-3xl">
+        <header className="mb-3 flex items-center justify-between">
+          <h1
+            onClick={handleTitleClick}
+            className="cursor-pointer select-none text-2xl font-semibold tracking-tight"
+          >
+            ZPRT App
+          </h1>
+          <div className="rounded-md border border-border bg-card px-2 py-1 text-xs text-muted-foreground">
+            {t("status.label")}:{" "}
+            <span
+              className={
+                state.isRunning ? "font-medium text-emerald-400" : "text-foreground"
+              }
+            >
+              {statusLabel}
+            </span>
+          </div>
+        </header>
+
+        <Tabs
+          value={tab}
+          onValueChange={(value) => setTab(value as Tab)}
+          className="w-full"
+        >
+          <TabsList variant="line" className="mb-3 w-full justify-start">
+            <TabsTrigger
+              value="control"
+              disabled={busy || savingLists || !hasInstalledVersions}
+            >
+              {t("tabs.control")}
+            </TabsTrigger>
+            <TabsTrigger
+              value="lists"
+              disabled={busy || savingLists || !hasInstalledVersions}
+            >
+              {t("tabs.lists")}
+            </TabsTrigger>
+            <TabsTrigger
+              value="versions"
+              disabled={busy || savingLists}
+              className={
+                state.updateAvailable
+                  ? "rounded-md border border-[#fcce03] px-2 data-active:border-[#fcce03]"
+                  : ""
+              }
+            >
+              <span className="inline-flex items-center gap-2">
+                {state.updateAvailable && (
+                  <span className="size-2 rounded-full bg-[#fcce03]" />
+                )}
+                {t("tabs.versions")}
+              </span>
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="control">
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("control.title")}</CardTitle>
+                <CardDescription>{t("control.description")}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>{t("control.strategy")}</Label>
+                  <Popover
+                    open={strategyPickerOpen}
+                    onOpenChange={setStrategyPickerOpen}
+                  >
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        role="combobox"
+                        aria-expanded={strategyPickerOpen}
+                        disabled={busy || state.strategies.length === 0}
+                        className="w-full justify-between"
+                      >
+                        <span className="truncate text-left">
+                          {state.selectedStrategy
+                            ? formatStrategyName(state.selectedStrategy)
+                            : t("control.selectStrategy")}
+                        </span>
+                        <CaretUpDownIcon className="ml-2 size-4 shrink-0 opacity-60" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0">
+                      <Command>
+                        <CommandInput placeholder={t("control.searchStrategy")} />
+                        <CommandList>
+                          <CommandEmpty>{t("control.noStrategyFound")}</CommandEmpty>
+                          <CommandGroup>
+                            {state.strategies.map((strategy) => (
+                              <CommandItem
+                                key={strategy}
+                                value={strategy}
+                                data-checked={
+                                  state.selectedStrategy === strategy
+                                    ? "true"
+                                    : "false"
+                                }
+                                onSelect={(value) => {
+                                  if (
+                                    !value ||
+                                    value === state.selectedStrategy ||
+                                    busy
+                                  ) {
+                                    setStrategyPickerOpen(false);
+                                    return;
+                                  }
+                                  setStrategyPickerOpen(false);
+                                  void runAction(() =>
+                                    invoke("select_strategy", {
+                                      strategy: value,
+                                    }).then(() => undefined),
+                                  );
+                                }}
+                              >
+                                <span className="truncate">
+                                  {formatStrategyName(strategy)}
+                                </span>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    disabled={
+                      busy ||
+                      !state.selectedStrategy ||
+                      !state.activeVersion
+                    }
+                    onClick={() =>
+                      runAction(
+                        async () => {
+                          if (state.isRunning) {
+                            await invoke("stop_bypass");
+                          }
+                          await invoke("start_bypass");
+                        },
+                        state.isRunning
+                          ? t("toasts.bypassRestarted")
+                          : t("toasts.bypassStarted")
+                      )
+                    }
+                  >
+                    {state.isRunning ? t("control.restart") : t("control.start")}
+                  </Button>
+                  {state.isRunning && (
+                    <Button
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() =>
+                        runAction(
+                          () => invoke("stop_bypass").then(() => undefined),
+                          t("toasts.bypassStopped")
+                        )
+                      }
+                    >
+                      {t("control.stop")}
+                    </Button>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="autostart">{t("control.autostart")}</Label>
+                  </div>
+                  <Switch
+                    id="autostart"
+                    checked={state.autostartEnabled}
+                    disabled={busy}
+                    onCheckedChange={(checked) =>
+                      runAction(
+                        () =>
+                          invoke("set_autostart", {
+                            enabled: checked,
+                          }).then(() => undefined),
+                        checked
+                          ? t("toasts.autostartOn")
+                          : t("toasts.autostartOff")
+                      )
+                    }
+                  />
+                </div>
+
+                <Button
+                  variant="outline"
+                  disabled={busy || !state.activeVersion}
+                  onClick={() =>
+                    runAction(
+                      () => invoke("open_service_bat").then(() => undefined),
+                      t("toasts.serviceOpened")
+                    )
+                  }
+                >
+                  {t("control.openService")}
+                </Button>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="lists">
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("lists.title")}</CardTitle>
+                <CardDescription>{t("lists.description")}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>{t("lists.listLabel")}</Label>
+                  <Select
+                    value={selectedListKey}
+                    onValueChange={(value) =>
+                      setSelectedListKey(value as UserListKey)
+                    }
+                    disabled={busy || savingLists}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="general">{t("lists.general")}</SelectItem>
+                      <SelectItem value="excludeDomains">
+                        {t("lists.excludeDomains")}
+                      </SelectItem>
+                      <SelectItem value="excludeIps">{t("lists.excludeIps")}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <Textarea
+                  value={selectedListValue}
+                  onChange={(event) =>
+                    setListValue(selectedListKey, event.target.value)
+                  }
+                  onBlur={() => {
+                    if (selectedListDirty) {
+                      void saveSelectedList(false);
+                    }
+                  }}
+                  placeholder={
+                    selectedListKey === "general"
+                      ? t("lists.placeholders.general")
+                      : selectedListKey === "excludeDomains"
+                        ? t("lists.placeholders.excludeDomains")
+                        : t("lists.placeholders.excludeIps")
+                  }
+                  className="min-h-[260px] font-mono text-sm"
+                />
+
+                <Button
+                  disabled={savingLists || busy || !selectedListDirty}
+                  onClick={() => void saveSelectedList(true)}
+                >
+                  {t("lists.save")}
+                </Button>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="versions">
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("versions.title")}</CardTitle>
+                <CardDescription>{t("versions.description")}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-2 rounded-lg border border-border bg-muted/30 p-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">{t("versions.current")}:</span>
+                    <span className="font-medium">
+                      {state.activeVersion ?? t("versions.none")}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">{t("versions.latest")}:</span>
+                    <span className="font-medium">
+                      {state.latestVersion ?? t("versions.unknown")}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {(state.updateAvailable || !hasInstalledVersions) && (
+                    <Button
+                      disabled={busy}
+                      onClick={() =>
+                        runAction(
+                          () => invoke("install_latest").then(() => undefined),
+                          hasInstalledVersions
+                            ? t("toasts.latestVersionInstalled")
+                            : t("toasts.versionInstalled")
+                        )
+                      }
+                    >
+                      {hasInstalledVersions
+                        ? t("versions.update")
+                        : t("versions.install")}
+                    </Button>
+                  )}
+                  <Button
+                    variant="outline"
+                    disabled={busy}
+                    onClick={checkUpdatesAction}
+                  >
+                    {t("versions.checkUpdates")}
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>{t("versions.versionSelectLabel")}</Label>
+                  <Select
+                    value={state.activeVersion ?? undefined}
+                    onValueChange={(value) =>
+                      runAction(
+                        () =>
+                          invoke("switch_active_version", {
+                            version: value,
+                          }).then(() => undefined),
+                        t("toasts.currentVersionChanged")
+                      )
+                    }
+                    disabled={busy || state.installedVersions.length === 0}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder={t("versions.selectVersion")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {state.installedVersions.map((version) => (
+                        <SelectItem key={version} value={version}>
+                          {version}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2">
+                  <Label htmlFor="notify-updates">{t("versions.notify")}</Label>
+                  <Switch
+                    id="notify-updates"
+                    checked={state.notifyUpdateAvailable}
+                    disabled={busy}
+                    onCheckedChange={(checked) =>
+                      runAction(
+                        () =>
+                          invoke("set_update_notifications_enabled", {
+                            enabled: checked,
+                          }).then(() => undefined),
+                        checked
+                          ? t("toasts.notificationsOn")
+                          : t("toasts.notificationsOff")
+                      )
+                    }
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </main>
+  );
 }
 
 export default function App() {
-    if (window.location.hash === "#update-toast") {
-        return <UpdateToastView />;
-    }
-
-    const [state, setState] = useState<AppState>(emptyState);
-    const [tab, setTab] = useState<Tab>("control");
-    const [busy, setBusy] = useState(false);
-    const [savingLists, setSavingLists] = useState(false);
-    const [toasts, setToasts] = useState<Toast[]>([]);
-    const [showEasterEgg, setShowEasterEgg] = useState(false);
-    const [titleClickCount, setTitleClickCount] = useState(0);
-    const [selectedListKey, setSelectedListKey] =
-        useState<UserListKey>("general");
-    const [savedLists, setSavedLists] = useState<Record<UserListKey, string>>({
-        general: "",
-        excludeDomains: "",
-        excludeIps: "",
-    });
-    const startupUpdateToastShown = useRef(false);
-    const easterEggTimeoutRef = useRef<number | null>(null);
-
-    const statusLabel = useMemo(() => {
-        if (state.isRunning) return "Запущен";
-        return "Остановлен";
-    }, [state.isRunning]);
-
-    const hasInstalledVersions = state.installedVersions.length > 0;
-    const selectedListValue = getListValue(state, selectedListKey);
-    const selectedListDirty = selectedListValue !== savedLists[selectedListKey];
-    const selectedListLabel =
-        selectedListKey === "general"
-            ? "Домены"
-            : selectedListKey === "excludeDomains"
-              ? "Домены (исключения)"
-              : "IP-адреса (исключения)";
-    const selectedListPlaceholder =
-        selectedListKey === "general"
-            ? "Список доменов/IP для обхода"
-            : selectedListKey === "excludeDomains"
-              ? "Список доменов-исключений"
-              : "Список IP-адресов-исключений";
-
-    function showToast(text: string, type: ToastType = "info") {
-        const id = Date.now() + Math.floor(Math.random() * 1000);
-        setToasts((prev) => [...prev, { id, text, type }]);
-        window.setTimeout(() => {
-            setToasts((prev) => prev.filter((toast) => toast.id !== id));
-        }, 3800);
-    }
-
-    async function load() {
-        const next = await invoke<AppState>("load_app_state");
-        setState(next);
-        setSavedLists({
-            general: next.listGeneralUser,
-            excludeDomains: next.listExcludeUser,
-            excludeIps: next.ipsetExcludeUser,
-        });
-    }
-
-    function setListValue(key: UserListKey, value: string) {
-        setState((prev) => {
-            if (key === "general") return { ...prev, listGeneralUser: value };
-            if (key === "excludeDomains")
-                return { ...prev, listExcludeUser: value };
-            return { ...prev, ipsetExcludeUser: value };
-        });
-    }
-
-    async function saveSelectedList(showSuccessToast = true) {
-        const content = getListValue(state, selectedListKey);
-        if (savedLists[selectedListKey] === content) {
-            return;
-        }
-
-        setSavingLists(true);
-        try {
-            await invoke("save_user_list_file", {
-                listKind: selectedListKey,
-                content,
-            });
-            setSavedLists((prev) => ({ ...prev, [selectedListKey]: content }));
-            if (showSuccessToast) {
-                showToast("Список сохранён", "success");
-            }
-        } catch (error) {
-            showToast(String(error), "error");
-        } finally {
-            setSavingLists(false);
-        }
-    }
-
-    async function runAction(action: () => Promise<void>, okMessage?: string) {
-        setBusy(true);
-        try {
-            await action();
-            await load();
-            if (okMessage) {
-                showToast(okMessage, "success");
-            }
-        } catch (error) {
-            showToast(String(error), "error");
-        } finally {
-            setBusy(false);
-        }
-    }
-
-    async function checkUpdatesAction() {
-        setBusy(true);
-        try {
-            const next = await invoke<AppState>("refresh_release_info");
-            setState(next);
-            if (next.updateAvailable) {
-                showToast("Доступна новая версия", "info");
-            } else {
-                showToast("Установлена последняя версия", "success");
-            }
-        } catch (error) {
-            showToast(String(error), "error");
-        } finally {
-            setBusy(false);
-        }
-    }
-
-    useEffect(() => {
-        load().catch((error) => showToast(String(error), "error"));
-
-        let unlisten: (() => void) | undefined;
-        listen("bypass-state-changed", () => {
-            load().catch((error) => showToast(String(error), "error"));
-        })
-            .then((dispose) => {
-                unlisten = dispose;
-            })
-            .catch((error) => {
-                showToast(String(error), "error");
-            });
-
-        return () => {
-            if (unlisten) {
-                unlisten();
-            }
-        };
-    }, []);
-
-    useEffect(() => {
-        if (!startupUpdateToastShown.current && state.updateAvailable) {
-            startupUpdateToastShown.current = true;
-            showToast("Доступна новая версия утилиты", "info");
-        }
-    }, [state.updateAvailable]);
-
-    useEffect(() => {
-        if (!hasInstalledVersions && tab !== "versions") {
-            setTab("versions");
-        }
-    }, [hasInstalledVersions, tab]);
-
-    useEffect(() => {
-        return () => {
-            if (easterEggTimeoutRef.current !== null) {
-                window.clearTimeout(easterEggTimeoutRef.current);
-            }
-        };
-    }, []);
-
-    function handleTitleClick() {
-        setTitleClickCount((prev) => {
-            const next = prev + 1;
-            if (next >= 10) {
-                setShowEasterEgg(true);
-                if (easterEggTimeoutRef.current !== null) {
-                    window.clearTimeout(easterEggTimeoutRef.current);
-                }
-                easterEggTimeoutRef.current = window.setTimeout(() => {
-                    setShowEasterEgg(false);
-                    easterEggTimeoutRef.current = null;
-                }, 5000);
-                return 0;
-            }
-            return next;
-        });
-    }
-
-    return (
-        <main className="app">
-            {showEasterEgg && (
-                <div className="easter-egg-overlay" aria-hidden="true">
-                    <img src={coolImage} alt="" />
-                </div>
-            )}
-            <div className="toast-stack" aria-live="polite" aria-atomic="true">
-                {toasts.map((toast) => (
-                    <div key={toast.id} className={`toast ${toast.type}`}>
-                        {toast.text}
-                    </div>
-                ))}
-            </div>
-
-            <header className="header">
-                <h1 onClick={handleTitleClick}>ZPRT App</h1>
-            </header>
-
-            <div className="tabs">
-                <button
-                    className={tab === "control" ? "tab active" : "tab"}
-                    onClick={() => setTab("control")}
-                    disabled={busy || savingLists || !hasInstalledVersions}
-                >
-                    Управление
-                </button>
-                <button
-                    className={tab === "lists" ? "tab active" : "tab"}
-                    onClick={() => setTab("lists")}
-                    disabled={busy || savingLists || !hasInstalledVersions}
-                >
-                    Списки доменов
-                </button>
-                <button
-                    className={
-                        tab === "versions"
-                            ? "tab active"
-                            : `tab ${state.updateAvailable ? "has-update" : ""}`
-                    }
-                    onClick={() => setTab("versions")}
-                    disabled={busy || savingLists}
-                >
-                    {state.updateAvailable && (
-                        <span className="tab-dot" aria-hidden="true" />
-                    )}
-                    Версии
-                </button>
-            </div>
-
-            {tab === "control" && (
-                <section className="grid">
-                    <div className="card full">
-                        <h2>Управление обходом</h2>
-                        <div className="row">
-                            <strong>Статус:</strong>
-                            <span>{statusLabel}</span>
-                        </div>
-
-                        <label>
-                            Стратегия
-                            <select
-                                disabled={busy || state.strategies.length === 0}
-                                value={state.selectedStrategy ?? ""}
-                                onChange={(event) =>
-                                    runAction(() =>
-                                        invoke("select_strategy", {
-                                            strategy: event.target.value,
-                                        }).then(() => undefined),
-                                    )
-                                }
-                            >
-                                {state.strategies.map((strategy) => (
-                                    <option key={strategy} value={strategy}>
-                                        {strategy}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-
-                        <div className="controls">
-                            <button
-                                disabled={
-                                    busy ||
-                                    !state.selectedStrategy ||
-                                    !state.activeVersion ||
-                                    state.isRunning
-                                }
-                                onClick={() =>
-                                    runAction(
-                                        () =>
-                                            invoke("start_bypass").then(
-                                                () => undefined,
-                                            ),
-                                        "Обход запущен",
-                                    )
-                                }
-                            >
-                                Запустить
-                            </button>
-                            <button
-                                disabled={busy || !state.isRunning}
-                                onClick={() =>
-                                    runAction(
-                                        () =>
-                                            invoke("stop_bypass").then(
-                                                () => undefined,
-                                            ),
-                                        "Обход остановлен",
-                                    )
-                                }
-                            >
-                                Остановить
-                            </button>
-                        </div>
-
-                        <label className="inline">
-                            <input
-                                type="checkbox"
-                                checked={state.autostartEnabled}
-                                onChange={(event) =>
-                                    runAction(
-                                        () =>
-                                            invoke("set_autostart", {
-                                                enabled: event.target.checked,
-                                            }).then(() => undefined),
-                                        event.target.checked
-                                            ? "Автозапуск включён"
-                                            : "Автозапуск выключен",
-                                    )
-                                }
-                            />
-                            Запускать ZPRT App вместе с Windows
-                        </label>
-
-                        <button
-                            disabled={busy || !state.activeVersion}
-                            onClick={() =>
-                                runAction(
-                                    () =>
-                                        invoke("open_service_bat").then(
-                                            () => undefined,
-                                        ),
-                                    "service.bat открыт",
-                                )
-                            }
-                        >
-                            Открыть service
-                        </button>
-                    </div>
-                </section>
-            )}
-
-            {tab === "lists" && (
-                <section className="grid">
-                    <div className="card full">
-                        <h2>Редактирование списков</h2>
-
-                        <label>
-                            Список
-                            <select
-                                disabled={busy || savingLists}
-                                value={selectedListKey}
-                                onChange={(event) =>
-                                    setSelectedListKey(
-                                        event.target.value as UserListKey,
-                                    )
-                                }
-                            >
-                                <option value="general">Домены</option>
-                                <option value="excludeDomains">
-                                    Домены (исключения)
-                                </option>
-                                <option value="excludeIps">
-                                    IP-адреса (исключения)
-                                </option>
-                            </select>
-                        </label>
-
-                        <div className="editors single">
-                            <label>
-                                <textarea
-                                    value={selectedListValue}
-                                    onChange={(event) =>
-                                        setListValue(
-                                            selectedListKey,
-                                            event.target.value,
-                                        )
-                                    }
-                                    onBlur={() => {
-                                        if (selectedListDirty) {
-                                            void saveSelectedList(false);
-                                        }
-                                    }}
-                                    placeholder={selectedListPlaceholder}
-                                />
-                            </label>
-                        </div>
-
-                        <button
-                            disabled={savingLists || busy || !selectedListDirty}
-                            onClick={() => void saveSelectedList(true)}
-                        >
-                            Сохранить
-                        </button>
-                    </div>
-                </section>
-            )}
-
-            {tab === "versions" && (
-                <section className="grid">
-                    <div className="card full">
-                        <h2>Версии</h2>
-                        <div className="row">
-                            <strong>Текущая:</strong>
-                            <span>{state.activeVersion ?? "не выбрана"}</span>
-                        </div>
-                        <div className="row">
-                            <strong>Последняя:</strong>
-                            <span>{state.latestVersion ?? "неизвестно"}</span>
-                        </div>
-
-                        <div className="controls">
-                            {(state.updateAvailable ||
-                                !hasInstalledVersions) && (
-                                <button
-                                    disabled={busy}
-                                    onClick={() =>
-                                        runAction(
-                                            () =>
-                                                invoke("install_latest").then(
-                                                    () => undefined,
-                                                ),
-                                            hasInstalledVersions
-                                                ? "Последняя версия установлена"
-                                                : "Версия установлена",
-                                        )
-                                    }
-                                >
-                                    {hasInstalledVersions
-                                        ? "Обновить"
-                                        : "Установить"}
-                                </button>
-                            )}
-                            <button
-                                disabled={busy}
-                                onClick={checkUpdatesAction}
-                            >
-                                Проверить обновления
-                            </button>
-                        </div>
-
-                        <label>
-                            Выбор версии обхода
-                            <select
-                                disabled={
-                                    busy || state.installedVersions.length === 0
-                                }
-                                value={state.activeVersion ?? ""}
-                                onChange={(event) => {
-                                    runAction(
-                                        () =>
-                                            invoke("switch_active_version", {
-                                                version: event.target.value,
-                                            }).then(() => undefined),
-                                        "Текущая версия изменена",
-                                    );
-                                }}
-                            >
-                                {state.installedVersions.map((version) => (
-                                    <option key={version} value={version}>
-                                        {version}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-
-                        <label className="inline">
-                            <input
-                                type="checkbox"
-                                checked={state.notifyUpdateAvailable}
-                                onChange={(event) =>
-                                    runAction(
-                                        () =>
-                                            invoke(
-                                                "set_update_notifications_enabled",
-                                                {
-                                                    enabled:
-                                                        event.target.checked,
-                                                },
-                                            ).then(() => undefined),
-                                        event.target.checked
-                                            ? "Уведомления об обновлениях включены"
-                                            : "Уведомления об обновлениях выключены",
-                                    )
-                                }
-                            />
-                            Уведомлять о наличии новой версии zapret
-                        </label>
-                    </div>
-                </section>
-            )}
-        </main>
-    );
+  if (window.location.hash === "#update-toast") {
+    return <UpdateToastView />;
+  }
+  return <MainApp />;
 }

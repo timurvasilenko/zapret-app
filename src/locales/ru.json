@@ -1,0 +1,74 @@
+{
+    "__meta": {
+        "encoding_note": "ВНИМАНИЕ: после каждой правки этого файла обязательно перепроверяй, что кодировка осталась UTF-8 и кириллица отображается корректно."
+    },
+    "tabs": {
+        "control": "Управление",
+        "lists": "Списки доменов",
+        "versions": "Версии"
+    },
+    "status": {
+        "label": "Статус",
+        "running": "Запущен",
+        "stopped": "Остановлен"
+    },
+    "control": {
+        "title": "Управление обходом",
+        "description": "Выберите стратегию, затем запускайте или останавливайте обход.",
+        "strategy": "Стратегия",
+        "selectStrategy": "Выберите стратегию",
+    "searchStrategy": "Поиск стратегии...",
+    "noStrategyFound": "Ничего не найдено",
+    "start": "Запустить",
+    "restart": "Перезапустить",
+    "stop": "Остановить",
+        "autostart": "Запускать ZPRT App вместе с Windows",
+        "openService": "Открыть service"
+    },
+    "lists": {
+        "title": "Списки доменов",
+        "description": "Редактируйте пользовательские списки. Изменения применятся после перезапуска стратегии.",
+        "listLabel": "Список",
+        "general": "Домены",
+        "excludeDomains": "Домены (исключения)",
+        "excludeIps": "IP-адреса (исключения)",
+        "save": "Сохранить",
+        "placeholders": {
+            "general": "Список доменов/IP для обхода",
+            "excludeDomains": "Список доменов-исключений",
+            "excludeIps": "Список IP-адресов-исключений"
+        }
+    },
+    "versions": {
+        "title": "Версии",
+        "description": "Установка, проверка обновлений и выбор активной версии zapret.",
+        "current": "Текущая",
+        "latest": "Последняя",
+        "none": "не выбрана",
+        "unknown": "неизвестно",
+        "update": "Обновить",
+        "install": "Установить",
+        "checkUpdates": "Проверить обновления",
+        "versionSelectLabel": "Выбор версии обхода",
+        "selectVersion": "Выберите версию",
+        "notify": "Уведомлять о наличии новой версии zapret"
+    },
+    "toasts": {
+        "newZapretVersion": "Доступна новая версия zapret",
+        "listSaved": "Список сохранен",
+        "updateAvailable": "Доступна новая версия",
+        "latestInstalled": "Установлена последняя версия",
+    "newUtilityVersion": "Доступна новая версия утилиты",
+    "bypassStarted": "Обход запущен",
+    "bypassRestarted": "Обход перезапущен",
+    "bypassStopped": "Обход остановлен",
+        "autostartOn": "Автозапуск включен",
+        "autostartOff": "Автозапуск выключен",
+        "serviceOpened": "service.bat открыт",
+        "latestVersionInstalled": "Последняя версия установлена",
+        "versionInstalled": "Версия установлена",
+        "currentVersionChanged": "Текущая версия изменена",
+        "notificationsOn": "Уведомления об обновлениях включены",
+        "notificationsOff": "Уведомления об обновлениях выключены"
+    }
+}
