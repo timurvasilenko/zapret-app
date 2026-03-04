@@ -2,6 +2,9 @@
 
 ZPRT App - это приложение для Windows, созданное для упрощённого использования инструмента `zapret-discord-youtube` (далее - `zapret`) через окно настроек и трей-меню.
 
+<img width="640" height="802" alt="image" src="https://github.com/user-attachments/assets/80982d1f-2a92-4e11-8f6d-7017a7180006" />
+<img width="881" height="832" alt="image" src="https://github.com/user-attachments/assets/b7c697e4-6128-4102-9492-da64999636e1" />
+
 ## Что умеет программа
 
 - Запуск и остановка обхода
@@ -14,7 +17,7 @@ ZPRT App - это приложение для Windows, созданное для
 
 ## Где скачать последнюю версию программы
 
-Последнюю версию `ZPRT App` можно скачать в разделе `Releases` данного репозитория.
+Последнюю версию `ZPRT App` можно скачать в [разделе `Releases` данного репозитория](https://github.com/timurvasilenko/zapret-app/releases).
 
 ## Как пользоваться
 
