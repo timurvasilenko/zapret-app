@@ -37,8 +37,9 @@ const TRAY_MENU_STRATEGY_PREFIX: &str = "tray_strategy::";
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 3600;
 const UPDATE_TOAST_WINDOW_LABEL: &str = "update-toast";
 const UPDATE_TOAST_EVENT: &str = "update-toast-message";
-const UPDATE_TOAST_WIDTH: f64 = 360.0;
-const UPDATE_TOAST_HEIGHT: f64 = 110.0;
+const OPEN_VERSIONS_TAB_EVENT: &str = "open-versions-tab";
+const UPDATE_TOAST_WIDTH: f64 = 300.0;
+const UPDATE_TOAST_HEIGHT: f64 = 84.0;
 const UPDATE_TOAST_MARGIN: i32 = 16;
 const UPDATE_TOAST_HIDE_SECS: u64 = 5;
 const USER_LISTS_DIR: &str = "user-lists";
@@ -943,6 +944,26 @@ async fn set_update_notifications_enabled(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn hide_update_toast(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(UPDATE_TOAST_WINDOW_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_main_versions_from_toast(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(UPDATE_TOAST_WINDOW_LABEL) {
+        let _ = window.hide();
+    }
+
+    show_main_window(&app);
+    app.emit(OPEN_VERSIONS_TAB_EVENT, ())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn save_user_list_file(list_kind: String, content: String) -> Result<(), String> {
     let (general_path, exclude_path, ipset_exclude_path) = user_list_paths()?;
     let target = match list_kind.as_str() {
@@ -1140,10 +1161,9 @@ async fn check_and_notify_new_zapret_version(app: &AppHandle) -> Result<(), Stri
 
 fn start_update_check_worker(app: AppHandle) {
     thread::spawn(move || {
-        thread::sleep(Duration::from_secs(5));
         loop {
-        let _ = tauri::async_runtime::block_on(check_and_notify_new_zapret_version(&app));
-        thread::sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
+            let _ = tauri::async_runtime::block_on(check_and_notify_new_zapret_version(&app));
+            thread::sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
         }
     });
 }
@@ -1419,6 +1439,8 @@ pub fn run() {
             set_autostart,
             open_service_bat,
             set_update_notifications_enabled,
+            hide_update_toast,
+            open_main_versions_from_toast,
             save_user_list_file,
         ])
         .run(tauri::generate_context!())

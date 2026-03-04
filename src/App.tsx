@@ -2,14 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { CaretUpDownIcon } from "@phosphor-icons/react";
+import { CaretUpDownIcon, XIcon } from "@phosphor-icons/react";
 import { Toaster, toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import coolImage from "./img/cool.jpg";
 import { Button } from "@/components/ui/button";
 import {
+  Card,
+  CardContent,
   CardDescription,
-  CardTitle,
 } from "@/components/ui/card";
 import {
   Command,
@@ -49,7 +50,7 @@ type AppState = {
 };
 
 type Tab = "control" | "lists" | "versions";
-type ToastType = "success" | "error" | "info";
+type ToastType = "success" | "error" | "info" | "warning";
 type UserListKey = "general" | "excludeDomains" | "excludeIps";
 
 const emptyState: AppState = {
@@ -81,6 +82,22 @@ function UpdateToastView() {
   const { t } = useTranslation();
   const [text, setText] = useState(t("toasts.newZapretVersion"));
 
+  async function closeToast() {
+    try {
+      await invoke("hide_update_toast");
+    } catch {
+      // noop
+    }
+  }
+
+  async function openVersions() {
+    try {
+      await invoke("open_main_versions_from_toast");
+    } catch {
+      // noop
+    }
+  }
+
   useEffect(() => {
     const win = getCurrentWebviewWindow();
     let unlisten: (() => void) | undefined;
@@ -103,10 +120,31 @@ function UpdateToastView() {
 
   return (
     <div className="h-screen w-screen bg-transparent p-0">
-      <div className="h-full w-full rounded-xl border border-[#fcce03b3] bg-[#09111cf5] p-4 shadow-2xl">
-        <div className="text-sm font-bold text-[#fcce03]">ZPRT App</div>
-        <div className="mt-2 text-sm leading-relaxed text-slate-100">{text}</div>
-      </div>
+      <Card
+        className="h-full cursor-pointer rounded-none border-border bg-card/95 py-0 shadow-xl"
+        onClick={() => void openVersions()}
+      >
+        <CardContent className="relative flex h-full flex-col justify-center gap-1 px-3 py-2">
+          <button
+            type="button"
+            className="absolute right-1 top-1 inline-flex size-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            onClick={(event) => {
+              event.stopPropagation();
+              void closeToast();
+            }}
+            aria-label="Закрыть уведомление"
+          >
+            <XIcon className="size-4" />
+          </button>
+          <div className="flex items-center gap-2 pr-7 text-[10px] font-semibold uppercase tracking-wide text-primary">
+            <span className="size-1.5 rounded-full bg-primary" />
+            ZPRT App
+          </div>
+          <div className="line-clamp-2 pr-7 text-sm leading-snug text-foreground">
+            {text}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -147,6 +185,10 @@ function MainApp() {
     }
     if (type === "error") {
       toast.error(text);
+      return;
+    }
+    if (type === "warning") {
+      toast.warning(text);
       return;
     }
     toast(text);
@@ -214,7 +256,7 @@ function MainApp() {
       const next = await invoke<AppState>("refresh_release_info");
       setState(next);
       if (next.updateAvailable) {
-        showToast(t("toasts.updateAvailable"), "info");
+        showToast(t("toasts.updateAvailable"), "warning");
       } else {
         showToast(t("toasts.latestInstalled"), "success");
       }
@@ -247,9 +289,26 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen("open-versions-tab", () => {
+      setTab("versions");
+    })
+      .then((dispose) => {
+        unlisten = dispose;
+      })
+      .catch(() => {});
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!startupUpdateToastShown.current && state.updateAvailable) {
       startupUpdateToastShown.current = true;
-      showToast(t("toasts.newUtilityVersion"), "info");
+      showToast(t("toasts.newUtilityVersion"), "warning");
     }
   }, [state.updateAvailable, t]);
 
@@ -340,11 +399,7 @@ function MainApp() {
             <TabsTrigger
               value="versions"
               disabled={busy || savingLists}
-              className={
-                state.updateAvailable
-                  ? "rounded-md border border-[#fcce03] px-2 data-active:border-[#fcce03]"
-                  : ""
-              }
+              className={state.updateAvailable ? "px-2" : ""}
             >
               <span className="inline-flex items-center gap-2">
                 {state.updateAvailable && (
@@ -359,10 +414,7 @@ function MainApp() {
             <TabsContent value="control" className="m-0 h-full">
               <ScrollArea className="h-full">
                 <div className="space-y-4 p-4">
-                  <div className="space-y-1">
-                    <CardTitle>{t("control.title")}</CardTitle>
-                    <CardDescription>{t("control.description")}</CardDescription>
-                  </div>
+                  <CardDescription>{t("control.description")}</CardDescription>
                 <div className="space-y-2">
                   <Label>{t("control.strategy")}</Label>
                   <Popover
@@ -509,10 +561,7 @@ function MainApp() {
             <TabsContent value="lists" className="m-0 h-full">
               <ScrollArea className="h-full">
                 <div className="space-y-4 p-4">
-                  <div className="space-y-1">
-                    <CardTitle>{t("lists.title")}</CardTitle>
-                    <CardDescription>{t("lists.description")}</CardDescription>
-                  </div>
+                  <CardDescription>{t("lists.description")}</CardDescription>
                 <div className="space-y-2">
                   <Label>{t("lists.listLabel")}</Label>
                   <Select
@@ -568,10 +617,7 @@ function MainApp() {
             <TabsContent value="versions" className="m-0 h-full">
               <ScrollArea className="h-full">
                 <div className="space-y-4 p-4">
-                  <div className="space-y-1">
-                    <CardTitle>{t("versions.title")}</CardTitle>
-                    <CardDescription>{t("versions.description")}</CardDescription>
-                  </div>
+                  <CardDescription>{t("versions.description")}</CardDescription>
                 <div className="grid gap-2 rounded-lg border border-border bg-muted/30 p-3 text-sm">
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-muted-foreground">{t("versions.current")}:</span>
