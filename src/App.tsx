@@ -39,6 +39,7 @@ type AppState = {
   activeVersion: string | null;
   latestVersion: string | null;
   updateAvailable: boolean;
+  updateNotificationNeeded: boolean;
   strategies: string[];
   selectedStrategy: string | null;
   isRunning: boolean;
@@ -58,6 +59,7 @@ const emptyState: AppState = {
   activeVersion: null,
   latestVersion: null,
   updateAvailable: false,
+  updateNotificationNeeded: false,
   strategies: [],
   selectedStrategy: null,
   isRunning: false,
@@ -153,6 +155,7 @@ function MainApp() {
   const { t } = useTranslation();
   const [state, setState] = useState<AppState>(emptyState);
   const [tab, setTab] = useState<Tab>("control");
+  const [isInitialStateLoaded, setIsInitialStateLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [savingLists, setSavingLists] = useState(false);
   const [strategyPickerOpen, setStrategyPickerOpen] = useState(false);
@@ -202,6 +205,7 @@ function MainApp() {
       excludeDomains: next.listExcludeUser,
       excludeIps: next.ipsetExcludeUser,
     });
+    setIsInitialStateLoaded(true);
   }
 
   function setListValue(key: UserListKey, value: string) {
@@ -255,9 +259,9 @@ function MainApp() {
     try {
       const next = await invoke<AppState>("refresh_release_info");
       setState(next);
-      if (next.updateAvailable) {
+      if (next.updateAvailable && next.updateNotificationNeeded) {
         showToast(t("toasts.updateAvailable"), "warning");
-      } else {
+      } else if (!next.updateAvailable) {
         showToast(t("toasts.latestInstalled"), "success");
       }
     } catch (error) {
@@ -306,17 +310,21 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
-    if (!startupUpdateToastShown.current && state.updateAvailable) {
+    if (
+      !startupUpdateToastShown.current &&
+      state.updateAvailable &&
+      state.updateNotificationNeeded
+    ) {
       startupUpdateToastShown.current = true;
       showToast(t("toasts.newUtilityVersion"), "warning");
     }
-  }, [state.updateAvailable, t]);
+  }, [state.updateAvailable, state.updateNotificationNeeded, t]);
 
   useEffect(() => {
-    if (!hasInstalledVersions && tab !== "versions") {
+    if (isInitialStateLoaded && !hasInstalledVersions && tab !== "versions") {
       setTab("versions");
     }
-  }, [hasInstalledVersions, tab]);
+  }, [hasInstalledVersions, isInitialStateLoaded, tab]);
 
   useEffect(() => {
     return () => {
@@ -542,18 +550,32 @@ function MainApp() {
                   />
                 </div>
 
-                <Button
-                  variant="outline"
-                  disabled={busy || !state.activeVersion}
-                  onClick={() =>
-                    runAction(
-                      () => invoke("open_service_bat").then(() => undefined),
-                      t("toasts.serviceOpened")
-                    )
-                  }
-                >
-                  {t("control.openService")}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={busy || !state.activeVersion}
+                    onClick={() =>
+                      runAction(() => invoke("open_service_bat").then(() => undefined))
+                    }
+                  >
+                    {t("control.openService")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={busy || !state.activeVersion}
+                    onClick={() =>
+                      runAction(() =>
+                        invoke("open_active_version_folder").then(
+                          () => undefined,
+                        ),
+                      )
+                    }
+                  >
+                    {t("control.openBypassFolder", {
+                      version: state.activeVersion ?? "-",
+                    })}
+                  </Button>
+                </div>
                 </div>
               </ScrollArea>
             </TabsContent>

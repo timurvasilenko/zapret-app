@@ -86,6 +86,7 @@ struct UiState {
     active_version: Option<String>,
     latest_version: Option<String>,
     update_available: bool,
+    update_notification_needed: bool,
     strategies: Vec<String>,
     selected_strategy: Option<String>,
     is_running: bool,
@@ -779,12 +780,22 @@ async fn build_ui_state() -> Result<UiState, String> {
         (None, Some(_)) => true,
         _ => false,
     };
+    let update_notification_needed = if update_available && config.notify_update_available {
+        match (latest_version.as_deref(), config.last_update_notification.as_deref()) {
+            (Some(latest), Some(last)) => is_version_greater_than(latest, last),
+            (Some(_), None) => true,
+            _ => false,
+        }
+    } else {
+        false
+    };
 
     Ok(UiState {
         installed_versions,
         active_version: config.active_version,
         latest_version,
         update_available,
+        update_notification_needed,
         strategies,
         selected_strategy: config.selected_strategy,
         is_running: is_winws_running(),
@@ -929,6 +940,22 @@ async fn open_service_bat() -> Result<(), String> {
         Command::new("cmd")
             .args(["/C", "start", "", "service.bat"])
             .current_dir(version_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_active_version_folder() -> Result<(), String> {
+    let config = load_config()?;
+    let version_dir = active_version_dir(&config)?;
+
+    #[cfg(windows)]
+    {
+        Command::new("explorer")
+            .arg(&version_dir)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -1438,6 +1465,7 @@ pub fn run() {
             stop_bypass,
             set_autostart,
             open_service_bat,
+            open_active_version_folder,
             set_update_notifications_enabled,
             hide_update_toast,
             open_main_versions_from_toast,

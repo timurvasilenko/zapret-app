@@ -21,8 +21,9 @@
     "start": "Запустить",
     "restart": "Перезапустить",
     "stop": "Остановить",
-        "autostart": "Запускать ZPRT App вместе с Windows",
-        "openService": "Открыть service"
+    "autostart": "Запускать ZPRT App вместе с Windows",
+    "openService": "Открыть service",
+    "openBypassFolder": "Открыть папку обхода ({{version}})"
     },
   "lists": {
     "description": "Редактируйте пользовательские списки. Изменения применятся после перезапуска стратегии.",
@@ -59,10 +60,9 @@
     "bypassStarted": "Обход запущен",
     "bypassRestarted": "Обход перезапущен",
     "bypassStopped": "Обход остановлен",
-        "autostartOn": "Автозапуск включен",
-        "autostartOff": "Автозапуск выключен",
-        "serviceOpened": "service.bat открыт",
-        "latestVersionInstalled": "Последняя версия установлена",
+    "autostartOn": "Автозапуск включен",
+    "autostartOff": "Автозапуск выключен",
+    "latestVersionInstalled": "Последняя версия установлена",
         "versionInstalled": "Версия установлена",
         "currentVersionChanged": "Текущая версия изменена",
         "notificationsOn": "Уведомления об обновлениях включены",
