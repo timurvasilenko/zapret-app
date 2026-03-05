@@ -129,3 +129,31 @@
     @apply bg-background font-sans text-foreground antialiased;
   }
 }
+
+[data-sonner-toaster].zprt-toaster[data-y-position="top"] {
+  top: 46px !important;
+}
+
+.zprt-lists-textarea {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--primary) 70%, var(--muted-foreground) 30%) color-mix(in oklab, var(--card) 80%, var(--background) 20%);
+}
+
+.zprt-lists-textarea::-webkit-scrollbar {
+  width: 10px;
+}
+
+.zprt-lists-textarea::-webkit-scrollbar-track {
+  background: color-mix(in oklab, var(--card) 80%, var(--background) 20%);
+  border-radius: 999px;
+}
+
+.zprt-lists-textarea::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--primary) 70%, var(--muted-foreground) 30%);
+  border: 2px solid color-mix(in oklab, var(--card) 80%, var(--background) 20%);
+  border-radius: 999px;
+}
+
+.zprt-lists-textarea::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--primary) 82%, var(--muted-foreground) 18%);
+}
