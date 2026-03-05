@@ -17,7 +17,7 @@ ZPRT App - это приложение для Windows, созданное для
 
 ## Где скачать последнюю версию программы
 
-Последнюю версию `ZPRT App` можно скачать в [разделе `Releases` данного репозитория](https://github.com/timurvasilenko/zapret-app/releases).
+Последнюю версию `ZPRT App` можно скачать в [разделе `Releases` данного репозитория](https://github.com/amati4s/zapret-app/releases).
 
 ## Как пользоваться
 
