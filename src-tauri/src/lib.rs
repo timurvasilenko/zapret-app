@@ -682,6 +682,92 @@ fn extract_zip_to_dir(zip_bytes: &[u8], destination: &Path) -> Result<(), String
     Ok(())
 }
 
+fn trim_ascii_whitespace_bytes(line: &[u8]) -> &[u8] {
+    let mut start = 0usize;
+    let mut end = line.len();
+
+    while start < end && line[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && line[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    &line[start..end]
+}
+
+fn should_remove_check_updates_line(line: &[u8]) -> bool {
+    let without_cr = line.strip_suffix(b"\r").unwrap_or(line);
+    let trimmed = trim_ascii_whitespace_bytes(without_cr);
+    trimmed.eq_ignore_ascii_case(b"call service.bat check_updates")
+}
+
+fn strip_check_updates_call_from_strategy(path: &Path) -> Result<(), String> {
+    let content = fs::read(path).map_err(|e| e.to_string())?;
+    let mut output = Vec::with_capacity(content.len());
+    let mut changed = false;
+    let mut index = 0usize;
+
+    while index < content.len() {
+        let line_start = index;
+        while index < content.len() && content[index] != b'\n' {
+            index += 1;
+        }
+
+        let has_newline = index < content.len() && content[index] == b'\n';
+        let line_end = index;
+        let line = &content[line_start..line_end];
+
+        if should_remove_check_updates_line(line) {
+            changed = true;
+        } else {
+            output.extend_from_slice(line);
+            if has_newline {
+                output.push(b'\n');
+            }
+        }
+
+        if has_newline {
+            index += 1;
+        }
+    }
+
+    if changed {
+        fs::write(path, output).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn patch_extracted_strategy_files(version_dir: &Path) -> Result<(), String> {
+    let mut stack = vec![version_dir.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path.is_file() {
+                continue;
+            }
+
+            let Some(name) = path.file_name().map(|v| v.to_string_lossy().to_string()) else {
+                continue;
+            };
+            let lower = name.to_ascii_lowercase();
+            if lower.starts_with("general") && lower.ends_with(".bat") {
+                strip_check_updates_call_from_strategy(&path)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn ensure_strategy_selected(config: &mut AppConfig, strategies: &[String]) {
     if strategies.is_empty() {
         config.selected_strategy = None;
@@ -927,6 +1013,10 @@ async fn refresh_release_info() -> Result<UiState, String> {
 
 #[tauri::command]
 async fn install_latest(app: AppHandle) -> Result<(), String> {
+    let was_running = is_winws_running();
+    let previous_config = load_config()?;
+    let previous_strategy = previous_config.selected_strategy.clone();
+
     let release = fetch_latest_release().await?;
     let normalized_version = normalize_version(&release.tag_name);
     let version_dir = zapret_root()?.join(&normalized_version);
@@ -943,14 +1033,38 @@ async fn install_latest(app: AppHandle) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
 
         extract_zip_to_dir(&bytes, &version_dir)?;
+        patch_extracted_strategy_files(&version_dir)?;
     }
 
-    let mut config = load_config()?;
+    if was_running {
+        stop_strategy_impl()?;
+    }
+
+    let mut config = previous_config;
     config.active_version = Some(normalized_version.clone());
     let strategies = list_strategies_for_version(&normalized_version)?;
-    ensure_strategy_selected(&mut config, &strategies);
+    config.selected_strategy = if let Some(prev) = previous_strategy {
+        if strategies.iter().any(|s| s == &prev) {
+            Some(prev)
+        } else {
+            strategies.first().cloned()
+        }
+    } else {
+        strategies.first().cloned()
+    };
     save_config(&config)?;
+
+    if was_running && config.selected_strategy.is_some() {
+        start_strategy_impl()?;
+        set_tray_icon_for_state(&app, true);
+        apply_tray_menu_state(&app, true);
+    } else {
+        set_tray_icon_for_state(&app, false);
+        apply_tray_menu_state(&app, false);
+    }
+
     refresh_tray_menu(&app);
+    emit_bypass_state_changed(&app);
     Ok(())
 }
 
