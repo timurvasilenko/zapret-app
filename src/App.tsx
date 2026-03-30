@@ -141,7 +141,7 @@ function UpdateToastView() {
                             event.stopPropagation();
                             void closeToast();
                         }}
-                        aria-label="Закрыть уведомление"
+                        aria-label={t("app.closeNotification")}
                     >
                         <XIcon className="size-4" />
                     </button>
@@ -437,7 +437,7 @@ function MainApp() {
                             onClick={handleTitleClick}
                             className="cursor-pointer select-none text-sm font-semibold tracking-tight"
                         >
-                            ZPRT App
+                            {t("app.windowName")}
                         </button>
                         <div className="ml-3 select-none rounded-md border border-border bg-card px-2 py-0.5 text-xs text-muted-foreground">
                             {t("status.label")}:{" "}
@@ -456,8 +456,8 @@ function MainApp() {
                                 type="button"
                                 onClick={() => void minimizeWindow()}
                                 className="inline-flex w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                                aria-label="Свернуть"
-                                title="Свернуть"
+                                aria-label={t("app.minimize")}
+                                title={t("app.minimize")}
                             >
                                 <MinusIcon className="size-4" />
                             </button>
@@ -465,8 +465,8 @@ function MainApp() {
                                 type="button"
                                 onClick={() => void closeWindow()}
                                 className="inline-flex w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-red-500 hover:text-white"
-                                aria-label="Закрыть"
-                                title="Закрыть"
+                                aria-label={t("app.close")}
+                                title={t("app.close")}
                             >
                                 <XIcon className="size-4" />
                             </button>
