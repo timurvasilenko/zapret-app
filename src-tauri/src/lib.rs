@@ -1,3 +1,4 @@
+use chrono::{FixedOffset, Utc};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use sysinfo::System;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -118,10 +119,14 @@ fn debug_log_error(context: &str, error: &str) {
         return;
     }
 
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let moscow = FixedOffset::east_opt(3 * 60 * 60);
+    let ts = match moscow {
+        Some(tz) => Utc::now()
+            .with_timezone(&tz)
+            .format("%Y-%m-%d %H:%M:%S UTC+3")
+            .to_string(),
+        None => Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+    };
     let line = format!("[{ts}] {context}: {error}\n");
 
     let Ok(path) = debug_log_path() else {

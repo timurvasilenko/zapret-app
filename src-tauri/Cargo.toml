@@ -27,3 +27,4 @@ windows = { version = "0.58", features = [
   "Win32_UI_Shell"
 ] }
 tauri-plugin-notification = "2"
+chrono = { version = "0.4", features = ["clock"] }
