@@ -7,7 +7,7 @@ use std::fs::{self, File};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use sysinfo::System;
@@ -49,6 +49,7 @@ const USER_LISTS_DIR: &str = "user-lists";
 const USER_LIST_GENERAL_FILE: &str = "list-general-user.txt";
 const USER_LIST_EXCLUDE_FILE: &str = "list-exclude-user.txt";
 const USER_LIST_IPSET_EXCLUDE_FILE: &str = "ipset-exclude-user.txt";
+static CONFIG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Default)]
 struct AppFlags {
@@ -58,6 +59,10 @@ struct AppFlags {
 
 fn default_true() -> bool {
     true
+}
+
+fn config_lock() -> &'static Mutex<()> {
+    CONFIG_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,7 +179,14 @@ fn read_user_list_files() -> Result<(String, String, String), String> {
     ))
 }
 
-fn load_config() -> Result<AppConfig, String> {
+fn with_config_lock<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _guard = config_lock()
+        .lock()
+        .map_err(|_| "Config lock is poisoned".to_string())?;
+    f()
+}
+
+fn load_config_unlocked() -> Result<AppConfig, String> {
     let cfg_path = config_path()?;
     if !cfg_path.exists() {
         return Ok(AppConfig::default());
@@ -187,11 +199,33 @@ fn load_config() -> Result<AppConfig, String> {
     serde_json::from_str(&content).map_err(|e| format!("Config parse error: {e}"))
 }
 
-fn save_config(config: &AppConfig) -> Result<(), String> {
+fn save_config_unlocked(config: &AppConfig) -> Result<(), String> {
     let cfg_path = config_path()?;
     let content = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
     let mut file = File::create(&cfg_path).map_err(|e| e.to_string())?;
     file.write_all(content.as_bytes()).map_err(|e| e.to_string())
+}
+
+fn load_config() -> Result<AppConfig, String> {
+    with_config_lock(load_config_unlocked)
+}
+
+fn read_config<T>(reader: impl FnOnce(&AppConfig) -> Result<T, String>) -> Result<T, String> {
+    with_config_lock(|| {
+        let config = load_config_unlocked()?;
+        reader(&config)
+    })
+}
+
+fn mutate_config<T>(
+    mutator: impl FnOnce(&mut AppConfig) -> Result<T, String>,
+) -> Result<T, String> {
+    with_config_lock(|| {
+        let mut config = load_config_unlocked()?;
+        let result = mutator(&mut config)?;
+        save_config_unlocked(&config)?;
+        Ok(result)
+    })
 }
 
 fn normalize_version(input: &str) -> String {
@@ -936,28 +970,28 @@ fn stop_strategy_impl() -> Result<(), String> {
 }
 
 async fn build_ui_state() -> Result<UiState, String> {
-    let mut config = load_config()?;
     let installed_versions = list_installed_versions()?;
-
-    if config.active_version.is_none() && !installed_versions.is_empty() {
-        config.active_version = installed_versions.first().cloned();
-    }
-
-    if let Some(active) = &config.active_version {
-        if !installed_versions.iter().any(|v| v == active) {
+    let (config, strategies) = mutate_config(|config| {
+        if config.active_version.is_none() && !installed_versions.is_empty() {
             config.active_version = installed_versions.first().cloned();
-            config.selected_strategy = None;
         }
-    }
 
-    let strategies = if let Some(active) = &config.active_version {
-        list_strategies_for_version(active)?
-    } else {
-        Vec::new()
-    };
+        if let Some(active) = &config.active_version {
+            if !installed_versions.iter().any(|v| v == active) {
+                config.active_version = installed_versions.first().cloned();
+                config.selected_strategy = None;
+            }
+        }
 
-    ensure_strategy_selected(&mut config, &strategies);
-    save_config(&config)?;
+        let strategies = if let Some(active) = &config.active_version {
+            list_strategies_for_version(active)?
+        } else {
+            Vec::new()
+        };
+
+        ensure_strategy_selected(config, &strategies);
+        Ok((config.clone(), strategies))
+    })?;
 
     let (list_general_user, list_exclude_user, ipset_exclude_user) = read_user_list_files()?;
 
@@ -1014,8 +1048,7 @@ async fn refresh_release_info() -> Result<UiState, String> {
 #[tauri::command]
 async fn install_latest(app: AppHandle) -> Result<(), String> {
     let was_running = is_winws_running();
-    let previous_config = load_config()?;
-    let previous_strategy = previous_config.selected_strategy.clone();
+    let previous_strategy = read_config(|config| Ok(config.selected_strategy.clone()))?;
 
     let release = fetch_latest_release().await?;
     let normalized_version = normalize_version(&release.tag_name);
@@ -1040,27 +1073,29 @@ async fn install_latest(app: AppHandle) -> Result<(), String> {
         stop_strategy_impl()?;
     }
 
-    let mut config = previous_config;
-    config.active_version = Some(normalized_version.clone());
-    let strategies = list_strategies_for_version(&normalized_version)?;
-    config.selected_strategy = if let Some(prev) = previous_strategy {
-        if strategies.iter().any(|s| s == &prev) {
-            Some(prev)
+    let selected_strategy = mutate_config(|config| {
+        config.active_version = Some(normalized_version.clone());
+        let strategies = list_strategies_for_version(&normalized_version)?;
+        config.selected_strategy = if let Some(prev) = previous_strategy {
+            if strategies.iter().any(|s| s == &prev) {
+                Some(prev)
+            } else {
+                strategies.first().cloned()
+            }
         } else {
             strategies.first().cloned()
-        }
-    } else {
-        strategies.first().cloned()
-    };
-    save_config(&config)?;
+        };
+        Ok(config.selected_strategy.clone())
+    })?;
 
-    if was_running && config.selected_strategy.is_some() {
+    if was_running && selected_strategy.is_some() {
         start_strategy_impl()?;
         set_tray_icon_for_state(&app, true);
         apply_tray_menu_state(&app, true);
     } else {
-        set_tray_icon_for_state(&app, false);
-        apply_tray_menu_state(&app, false);
+        let running = is_winws_running();
+        set_tray_icon_for_state(&app, running);
+        apply_tray_menu_state(&app, running);
     }
 
     refresh_tray_menu(&app);
@@ -1075,30 +1110,32 @@ async fn switch_active_version(app: AppHandle, version: String) -> Result<(), St
         return Err(format!("Version is not installed: {version}"));
     }
 
-    let mut config = load_config()?;
-    config.active_version = Some(version.clone());
-    let strategies = list_strategies_for_version(&version)?;
-    ensure_strategy_selected(&mut config, &strategies);
-    save_config(&config)?;
+    mutate_config(|config| {
+        config.active_version = Some(version.clone());
+        let strategies = list_strategies_for_version(&version)?;
+        ensure_strategy_selected(config, &strategies);
+        Ok(())
+    })?;
     refresh_tray_menu(&app);
     Ok(())
 }
 
 fn select_strategy_impl(app: &AppHandle, strategy: String) -> Result<(), String> {
     let was_running = is_winws_running();
-    let mut config = load_config()?;
-    let version = config
-        .active_version
-        .clone()
-        .ok_or_else(|| "Select a version first".to_string())?;
+    mutate_config(|config| {
+        let version = config
+            .active_version
+            .clone()
+            .ok_or_else(|| "Select a version first".to_string())?;
 
-    let strategies = list_strategies_for_version(&version)?;
-    if !strategies.iter().any(|s| s == &strategy) {
-        return Err(format!("Unknown strategy: {strategy}"));
-    }
+        let strategies = list_strategies_for_version(&version)?;
+        if !strategies.iter().any(|s| s == &strategy) {
+            return Err(format!("Unknown strategy: {strategy}"));
+        }
 
-    config.selected_strategy = Some(strategy);
-    save_config(&config)?;
+        config.selected_strategy = Some(strategy.clone());
+        Ok(())
+    })?;
     refresh_tray_menu(app);
 
     if was_running {
@@ -1215,9 +1252,10 @@ async fn open_release_info_for_version(version: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn set_update_notifications_enabled(enabled: bool) -> Result<(), String> {
-    let mut config = load_config()?;
-    config.notify_update_available = enabled;
-    save_config(&config)
+    mutate_config(|config| {
+        config.notify_update_available = enabled;
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -1260,6 +1298,7 @@ fn show_main_window(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+    emit_bypass_state_changed(app);
 }
 
 fn build_tray_circle_icon(r: u8, g: u8, b: u8) -> tauri::image::Image<'static> {
@@ -1414,15 +1453,15 @@ async fn check_and_notify_new_zapret_version(app: &AppHandle) -> Result<(), Stri
         return Ok(());
     }
 
-    let mut config = load_config()?;
-    if !config.notify_update_available {
-        return Ok(());
-    }
-
-    let should_notify = match config.last_update_notification.as_deref() {
-        Some(last) => is_version_greater_than(&latest_version, last),
-        None => true,
-    };
+    let should_notify = read_config(|config| {
+        if !config.notify_update_available {
+            return Ok(false);
+        }
+        Ok(match config.last_update_notification.as_deref() {
+            Some(last) => is_version_greater_than(&latest_version, last),
+            None => true,
+        })
+    })?;
 
     if !should_notify {
         return Ok(());
@@ -1430,8 +1469,10 @@ async fn check_and_notify_new_zapret_version(app: &AppHandle) -> Result<(), Stri
 
     show_custom_update_notification(app, &latest_version)?;
 
-    config.last_update_notification = Some(latest_version);
-    save_config(&config)?;
+    mutate_config(|config| {
+        config.last_update_notification = Some(latest_version.clone());
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -1551,12 +1592,15 @@ fn is_running_as_admin() -> bool {
     false
 }
 
-fn ensure_single_instance_or_exit() {
+fn ensure_single_instance_or_exit(silent_if_running: bool) {
     #[cfg(windows)]
     unsafe {
         let name = HSTRING::from(SINGLE_INSTANCE_MUTEX);
         let _mutex = CreateMutexW(None, false, &name);
         if GetLastError() == ERROR_ALREADY_EXISTS {
+            if silent_if_running {
+                std::process::exit(0);
+            }
             let text = HSTRING::from(
                 "ZPRT App уже запущен.\nЗакройте текущий экземпляр перед повторным запуском.",
             );
@@ -1649,6 +1693,9 @@ fn setup_tray(app: &AppHandle) -> Result<(), tauri::Error> {
 }
 
 pub fn run() {
+    let args: Vec<String> = std::env::args().collect();
+    let is_autostart_launch = args.iter().any(|arg| arg == "--autostart");
+
     if !is_running_as_admin() {
         let text = HSTRING::from(
             "Для работы ZPRT App требуются права администратора.\nПерезапустите приложение от имени администратора.",
@@ -1660,26 +1707,30 @@ pub fn run() {
         std::process::exit(1);
     }
 
-    ensure_single_instance_or_exit();
+    ensure_single_instance_or_exit(is_autostart_launch);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(AppFlags::default())
-        .setup(|app| {
+        .setup(move |app| {
             setup_tray(app.handle())?;
             set_tray_icon_for_state(app.handle(), is_winws_running());
             let _ = user_list_paths();
             let _ = ensure_update_toast_window(app.handle());
             start_update_check_worker(app.handle().clone());
 
-            let args: Vec<String> = std::env::args().collect();
-            if args.iter().any(|arg| arg == "--autostart") {
+            if is_autostart_launch {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
-                let _ = start_strategy_impl();
-                set_tray_icon_for_state(app.handle(), true);
-                apply_tray_menu_state(app.handle(), true);
+                if start_strategy_impl().is_ok() {
+                    set_tray_icon_for_state(app.handle(), true);
+                    apply_tray_menu_state(app.handle(), true);
+                } else {
+                    let running = is_winws_running();
+                    set_tray_icon_for_state(app.handle(), running);
+                    apply_tray_menu_state(app.handle(), running);
+                }
                 emit_bypass_state_changed(app.handle());
             }
 
