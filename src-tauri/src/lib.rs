@@ -3,13 +3,14 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -49,7 +50,9 @@ const USER_LISTS_DIR: &str = "user-lists";
 const USER_LIST_GENERAL_FILE: &str = "list-general-user.txt";
 const USER_LIST_EXCLUDE_FILE: &str = "list-exclude-user.txt";
 const USER_LIST_IPSET_EXCLUDE_FILE: &str = "ipset-exclude-user.txt";
+const DEBUG_LOG_FILE: &str = "debug_logs.txt";
 static CONFIG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static DEBUG_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Default)]
 struct AppFlags {
@@ -74,6 +77,8 @@ struct AppConfig {
     notify_update_available: bool,
     #[serde(default)]
     last_update_notification: Option<String>,
+    #[serde(default)]
+    debug_mode: bool,
 }
 
 impl Default for AppConfig {
@@ -83,8 +88,51 @@ impl Default for AppConfig {
             selected_strategy: None,
             notify_update_available: true,
             last_update_notification: None,
+            debug_mode: false,
         }
     }
+}
+
+fn debug_log_path() -> Result<PathBuf, String> {
+    Ok(app_base_dir()?.join(DEBUG_LOG_FILE))
+}
+
+fn ensure_debug_log_file() -> Result<(), String> {
+    let path = debug_log_path()?;
+    if !path.exists() {
+        fs::write(path, "").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn refresh_debug_mode_from_config() {
+    let enabled = load_config().map(|c| c.debug_mode).unwrap_or(false);
+    DEBUG_MODE_ENABLED.store(enabled, AtomicOrdering::Relaxed);
+    if enabled {
+        let _ = ensure_debug_log_file();
+    }
+}
+
+fn debug_log_error(context: &str, error: &str) {
+    if !DEBUG_MODE_ENABLED.load(AtomicOrdering::Relaxed) {
+        return;
+    }
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = format!("[{ts}] {context}: {error}\n");
+
+    let Ok(path) = debug_log_path() else {
+        return;
+    };
+
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+
+    let _ = file.write_all(line.as_bytes());
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1269,7 +1317,9 @@ async fn hide_update_toast(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn open_main_versions_from_toast(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(UPDATE_TOAST_WINDOW_LABEL) {
-        let _ = window.hide();
+        if let Err(err) = window.hide() {
+            debug_log_error("open_main_versions_from_toast.window.hide", &err.to_string());
+        }
     }
 
     show_main_window(&app);
@@ -1294,9 +1344,15 @@ async fn save_user_list_file(list_kind: String, content: String) -> Result<(), S
 
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        if let Err(err) = window.show() {
+            debug_log_error("show_main_window.window.show", &err.to_string());
+        }
+        if let Err(err) = window.unminimize() {
+            debug_log_error("show_main_window.window.unminimize", &err.to_string());
+        }
+        if let Err(err) = window.set_focus() {
+            debug_log_error("show_main_window.window.set_focus", &err.to_string());
+        }
     }
     emit_bypass_state_changed(app);
 }
@@ -1405,8 +1461,12 @@ fn show_custom_update_notification(app: &AppHandle, latest_version: &str) -> Res
         .ok_or_else(|| "Toast window is not available".to_string())?;
 
     let payload = format!("Доступна новая версия zapret: {latest_version}");
-    let _ = window.emit(UPDATE_TOAST_EVENT, payload);
-    let _ = window.show();
+    if let Err(err) = window.emit(UPDATE_TOAST_EVENT, payload) {
+        debug_log_error("show_custom_update_notification.window.emit", &err.to_string());
+    }
+    if let Err(err) = window.show() {
+        debug_log_error("show_custom_update_notification.window.show", &err.to_string());
+    }
 
     let hide_seq = if let Some(flags) = app.try_state::<AppFlags>() {
         if let Ok(mut seq) = flags.toast_hide_seq.lock() {
@@ -1430,7 +1490,9 @@ fn show_custom_update_notification(app: &AppHandle, latest_version: &str) -> Res
 
         if should_hide {
             if let Some(win) = app_handle.get_webview_window(UPDATE_TOAST_WINDOW_LABEL) {
-                let _ = win.hide();
+                if let Err(err) = win.hide() {
+                    debug_log_error("show_custom_update_notification.auto_hide.window.hide", &err.to_string());
+                }
             }
         }
     });
@@ -1695,6 +1757,7 @@ fn setup_tray(app: &AppHandle) -> Result<(), tauri::Error> {
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     let is_autostart_launch = args.iter().any(|arg| arg == "--autostart");
+    refresh_debug_mode_from_config();
 
     if !is_running_as_admin() {
         let text = HSTRING::from(
@@ -1716,12 +1779,16 @@ pub fn run() {
             setup_tray(app.handle())?;
             set_tray_icon_for_state(app.handle(), is_winws_running());
             let _ = user_list_paths();
-            let _ = ensure_update_toast_window(app.handle());
+            if let Err(err) = ensure_update_toast_window(app.handle()) {
+                debug_log_error("run.setup.ensure_update_toast_window", &err);
+            }
             start_update_check_worker(app.handle().clone());
 
             if is_autostart_launch {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
+                    if let Err(err) = window.hide() {
+                        debug_log_error("run.setup.autostart.main_window.hide", &err.to_string());
+                    }
                 }
                 if start_strategy_impl().is_ok() {
                     set_tray_icon_for_state(app.handle(), true);
@@ -1740,7 +1807,9 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == UPDATE_TOAST_WINDOW_LABEL {
                     api.prevent_close();
-                    let _ = window.hide();
+                    if let Err(err) = window.hide() {
+                        debug_log_error("run.on_window_event.toast.window.hide", &err.to_string());
+                    }
                     return;
                 }
 
@@ -1752,7 +1821,9 @@ pub fn run() {
 
                 if !should_quit {
                     api.prevent_close();
-                    let _ = window.hide();
+                    if let Err(err) = window.hide() {
+                        debug_log_error("run.on_window_event.main.window.hide", &err.to_string());
+                    }
                 }
             }
         })
@@ -1775,7 +1846,10 @@ pub fn run() {
             save_user_list_file,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|err| {
+            debug_log_error("run.tauri_builder.run", &err.to_string());
+            panic!("error while running tauri application: {err}");
+        });
 }
 
 
