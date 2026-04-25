@@ -495,20 +495,19 @@ fn is_autostart_enabled() -> bool {
 fn set_autostart_impl(enabled: bool) -> Result<(), String> {
     if enabled {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let task_command = format!("\"{}\" --autostart", exe.display());
-        let output = Command::new("schtasks")
-            .args([
-                "/Create",
-                "/TN",
-                AUTOSTART_TASK_NAME,
-                "/TR",
-                &task_command,
-                "/SC",
-                "ONLOGON",
-                "/RL",
-                "HIGHEST",
-                "/F",
-            ])
+        let escaped_exe = exe.display().to_string().replace('\'', "''");
+        let escaped_task = AUTOSTART_TASK_NAME.replace('\'', "''");
+        let script = format!(
+            "$action = New-ScheduledTaskAction -Execute '{exe}' -Argument '--autostart'; \
+$trigger = New-ScheduledTaskTrigger -AtLogOn; \
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest; \
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; \
+Register-ScheduledTask -TaskName '{task}' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force",
+            exe = escaped_exe,
+            task = escaped_task
+        );
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
             .output()
             .map_err(|e| e.to_string())?;
 
