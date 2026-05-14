@@ -59,6 +59,7 @@ static DEBUG_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 struct AppFlags {
     is_quitting: Mutex<bool>,
     toast_hide_seq: Mutex<u64>,
+    frontend_ready: AtomicBool,
 }
 
 fn default_true() -> bool {
@@ -118,6 +119,14 @@ fn debug_log_error(context: &str, error: &str) {
     if !DEBUG_MODE_ENABLED.load(AtomicOrdering::Relaxed) {
         return;
     }
+    let _ = append_log_line(context, error);
+}
+
+fn append_log_line(context: &str, error: &str) -> Result<(), String> {
+    let path = debug_log_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
 
     let moscow = FixedOffset::east_opt(3 * 60 * 60);
     let ts = match moscow {
@@ -128,16 +137,12 @@ fn debug_log_error(context: &str, error: &str) {
         None => Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
     };
     let line = format!("[{ts}] {context}: {error}\n");
-
-    let Ok(path) = debug_log_path() else {
-        return;
-    };
-
-    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
-        return;
-    };
-
-    let _ = file.write_all(line.as_bytes());
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    file.write_all(line.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1346,6 +1351,20 @@ async fn save_user_list_file(list_kind: String, content: String) -> Result<(), S
     Ok(())
 }
 
+#[tauri::command]
+async fn log_frontend_error(message: String, context: Option<String>) -> Result<(), String> {
+    let ctx = context.unwrap_or_else(|| "frontend".to_string());
+    append_log_line(&format!("frontend.{ctx}"), &message)
+}
+
+#[tauri::command]
+async fn frontend_ready(app: AppHandle) -> Result<(), String> {
+    if let Some(flags) = app.try_state::<AppFlags>() {
+        flags.frontend_ready.store(true, AtomicOrdering::Relaxed);
+    }
+    Ok(())
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if let Err(err) = window.show() {
@@ -1787,6 +1806,20 @@ pub fn run() {
                 debug_log_error("run.setup.ensure_update_toast_window", &err);
             }
             start_update_check_worker(app.handle().clone());
+            let app_handle = app.handle().clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_secs(12));
+                let is_ready = app_handle
+                    .try_state::<AppFlags>()
+                    .map(|flags| flags.frontend_ready.load(AtomicOrdering::Relaxed))
+                    .unwrap_or(false);
+                if !is_ready {
+                    let _ = append_log_line(
+                        "run.setup.frontend_ready_watchdog",
+                        "frontend did not signal ready within 12 seconds",
+                    );
+                }
+            });
 
             if is_autostart_launch {
                 if let Some(window) = app.get_webview_window("main") {
@@ -1848,6 +1881,8 @@ pub fn run() {
             hide_update_toast,
             open_main_versions_from_toast,
             save_user_list_file,
+            log_frontend_error,
+            frontend_ready,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|err| {

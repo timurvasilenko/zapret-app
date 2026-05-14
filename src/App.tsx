@@ -178,7 +178,6 @@ function MainApp() {
 
     const startupUpdateToastShown = useRef(false);
     const easterEggTimeoutRef = useRef<number | null>(null);
-    const appWindow = useMemo(() => getCurrentWindow(), []);
 
     const hasInstalledVersions = state.installedVersions.length > 0;
     const selectedListValue = getListValue(state, selectedListKey);
@@ -367,7 +366,7 @@ function MainApp() {
 
     async function minimizeWindow() {
         try {
-            await appWindow.minimize();
+            await getCurrentWindow().minimize();
         } catch (error) {
             showToast(String(error), "error");
         }
@@ -375,7 +374,7 @@ function MainApp() {
 
     async function closeWindow() {
         try {
-            await appWindow.close();
+            await getCurrentWindow().close();
         } catch (error) {
             showToast(String(error), "error");
         }
@@ -396,7 +395,7 @@ function MainApp() {
         }
 
         try {
-            await appWindow.startDragging();
+            await getCurrentWindow().startDragging();
         } catch (error) {
             showToast(String(error), "error");
         }
