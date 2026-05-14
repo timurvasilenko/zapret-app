@@ -850,32 +850,35 @@ function MainApp() {
                                                     {state.activeVersion ??
                                                         t("versions.none")}
                                                 </div>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="xs"
-                                                    className="shrink-0"
-                                                    disabled={
-                                                        busy ||
-                                                        !state.activeVersion
-                                                    }
-                                                    onClick={() =>
-                                                        invoke(
-                                                            "open_release_info_for_version",
-                                                            {
-                                                                version:
-                                                                    state.activeVersion,
-                                                            },
-                                                        ).catch((error) =>
-                                                            showToast(
-                                                                String(error),
-                                                                "error",
-                                                            ),
-                                                        )
-                                                    }
-                                                >
-                                                    <ArrowSquareOutIcon className="size-3.5" />
-                                                    {t("versions.releaseInfo")}
-                                                </Button>
+                                                {state.activeVersion && (
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="xs"
+                                                        className="shrink-0"
+                                                        disabled={busy}
+                                                        onClick={() =>
+                                                            invoke(
+                                                                "open_release_info_for_version",
+                                                                {
+                                                                    version:
+                                                                        state.activeVersion,
+                                                                },
+                                                            ).catch((error) =>
+                                                                showToast(
+                                                                    String(
+                                                                        error,
+                                                                    ),
+                                                                    "error",
+                                                                ),
+                                                            )
+                                                        }
+                                                    >
+                                                        <ArrowSquareOutIcon className="size-3.5" />
+                                                        {t(
+                                                            "versions.releaseInfo",
+                                                        )}
+                                                    </Button>
+                                                )}
                                             </div>
                                         </div>
                                         <div
