@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZPRT DPI Diagnostics</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <div>
+          <div class="eyebrow">ZPRT App</div>
+          <h1>Диагностика DPI</h1>
+        </div>
+        <span id="stateBadge" class="badge">готово</span>
+      </header>
+
+      <section class="settings">
+        <label>
+          API адрес
+          <input id="apiUrl" type="text" spellcheck="false" />
+        </label>
+        <label>
+          API токен
+          <input id="apiToken" type="password" spellcheck="false" />
+        </label>
+      </section>
+
+      <button id="startButton" class="primary" type="button">Запустить проверку</button>
+
+      <section class="status">
+        <div id="message">Откройте проблемную страницу и запустите проверку.</div>
+        <div id="stats" class="stats"></div>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

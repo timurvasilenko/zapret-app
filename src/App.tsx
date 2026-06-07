@@ -13,7 +13,14 @@ import { Toaster, toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import coolImage from "./img/cool.jpg";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription } from "@/components/ui/card";
+import {
+    Card,
+    CardAction,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+} from "@/components/ui/card";
 import {
     Command,
     CommandEmpty,
@@ -22,12 +29,21 @@ import {
     CommandItem,
     CommandList,
 } from "@/components/ui/command";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+    DialogTrigger,
+} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import {
     Popover,
     PopoverContent,
     PopoverTrigger,
 } from "@/components/ui/popover";
+import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
     Select,
@@ -37,6 +53,14 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -55,9 +79,32 @@ type AppState = {
     listGeneralUser: string;
     listExcludeUser: string;
     ipsetExcludeUser: string;
+    extensionApiUrl: string;
+    extensionApiToken: string;
+    extensionDiagnostics: ExtensionDiagnosticsState;
 };
 
-type Tab = "control" | "lists" | "versions";
+type ExtensionDomainDiagnostic = {
+    domain: string;
+    blocked: boolean;
+    confidence: string;
+    reasons: string[];
+    rawSummary: string;
+    selected: boolean;
+};
+
+type ExtensionDiagnosticsState = {
+    status: "idle" | "running" | "done" | "error" | string;
+    diagnosticId: string | null;
+    pageUrl: string | null;
+    startedAt: string | null;
+    checkedAt: string | null;
+    error: string | null;
+    domainsTotal: number;
+    results: ExtensionDomainDiagnostic[];
+};
+
+type Tab = "control" | "lists" | "diagnostics" | "versions";
 type ToastType = "success" | "error" | "info" | "warning";
 type UserListKey = "general" | "excludeDomains" | "excludeIps";
 
@@ -76,6 +123,18 @@ const emptyState: AppState = {
     listGeneralUser: "",
     listExcludeUser: "",
     ipsetExcludeUser: "",
+    extensionApiUrl: "http://127.0.0.1:39876",
+    extensionApiToken: "",
+    extensionDiagnostics: {
+        status: "idle",
+        diagnosticId: null,
+        pageUrl: null,
+        startedAt: null,
+        checkedAt: null,
+        error: null,
+        domainsTotal: 0,
+        results: [],
+    },
 };
 
 function getListValue(state: AppState, key: UserListKey): string {
@@ -170,6 +229,9 @@ function MainApp() {
     const [titleClickCount, setTitleClickCount] = useState(0);
     const [selectedListKey, setSelectedListKey] =
         useState<UserListKey>("general");
+    const [selectedDiagnosticDomains, setSelectedDiagnosticDomains] = useState<
+        Set<string>
+    >(new Set());
     const [savedLists, setSavedLists] = useState<Record<UserListKey, string>>({
         general: "",
         excludeDomains: "",
@@ -178,10 +240,33 @@ function MainApp() {
 
     const startupUpdateToastShown = useRef(false);
     const easterEggTimeoutRef = useRef<number | null>(null);
+    const diagnosticsSelectionIdRef = useRef<string | null>(null);
 
     const hasInstalledVersions = state.installedVersions.length > 0;
     const selectedListValue = getListValue(state, selectedListKey);
     const selectedListDirty = selectedListValue !== savedLists[selectedListKey];
+    const diagnostics = state.extensionDiagnostics;
+    const selectedDiagnosticsCount = selectedDiagnosticDomains.size;
+    const diagnosticCheckedCount = diagnostics.results.filter(
+        (result) => result.confidence !== "pending",
+    ).length;
+    const diagnosticProgressValue =
+        diagnostics.results.length > 0
+            ? Math.min(
+                  100,
+                  Math.round(
+                      (diagnosticCheckedCount / diagnostics.results.length) *
+                          100,
+                  ),
+              )
+            : diagnostics.status === "done"
+              ? 100
+              : 0;
+    const isDiagnosticRunning = diagnostics.status === "running";
+    const isDiagnosticDone = diagnostics.status === "done";
+    const isDiagnosticIdle = diagnostics.status === "idle";
+    const canApplyDiagnosticDomains =
+        !busy && isDiagnosticDone && selectedDiagnosticsCount > 0;
 
     const statusLabel = useMemo(
         () => (state.isRunning ? t("status.running") : t("status.stopped")),
@@ -279,6 +364,45 @@ function MainApp() {
         }
     }
 
+    async function reloadDiagnosticsState() {
+        const diagnostics =
+            await invoke<ExtensionDiagnosticsState>(
+                "load_extension_diagnostics_state",
+            );
+        setState((prev) => ({ ...prev, extensionDiagnostics: diagnostics }));
+    }
+
+    async function copyText(value: string) {
+        try {
+            await navigator.clipboard.writeText(value);
+            showToast(t("toasts.copied"), "success");
+        } catch (error) {
+            showToast(String(error), "error");
+        }
+    }
+
+    function toggleDiagnosticDomain(domain: string, checked: boolean) {
+        setSelectedDiagnosticDomains((prev) => {
+            const next = new Set(prev);
+            if (checked) {
+                next.add(domain);
+            } else {
+                next.delete(domain);
+            }
+            return next;
+        });
+    }
+
+    async function applyDiagnosticDomains() {
+        await runAction(
+            () =>
+                invoke("apply_extension_diagnostic_domains", {
+                    domains: Array.from(selectedDiagnosticDomains),
+                }).then(() => undefined),
+            t("toasts.diagnosticDomainsApplied"),
+        );
+    }
+
     useEffect(() => {
         load().catch((error) => showToast(String(error), "error"));
 
@@ -316,6 +440,54 @@ function MainApp() {
             }
         };
     }, []);
+
+    useEffect(() => {
+        let unlistenDiagnostics: (() => void) | undefined;
+        let unlistenOpenDiagnostics: (() => void) | undefined;
+
+        listen("extension-diagnostics-changed", () => {
+            reloadDiagnosticsState().catch((error) =>
+                showToast(String(error), "error"),
+            );
+        })
+            .then((dispose) => {
+                unlistenDiagnostics = dispose;
+            })
+            .catch(() => {});
+
+        listen("open-diagnostics-tab", () => {
+            setTab("diagnostics");
+        })
+            .then((dispose) => {
+                unlistenOpenDiagnostics = dispose;
+            })
+            .catch(() => {});
+
+        return () => {
+            if (unlistenDiagnostics) {
+                unlistenDiagnostics();
+            }
+            if (unlistenOpenDiagnostics) {
+                unlistenOpenDiagnostics();
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        const selectedKey = diagnostics.results
+            .filter((result) => result.selected)
+            .map((result) => result.domain)
+            .join("|");
+        const selectionKey = `${diagnostics.diagnosticId ?? "none"}:${diagnostics.status}:${selectedKey}`;
+        const blockedDefaults = diagnostics.results
+            .filter((result) => result.selected)
+            .map((result) => result.domain);
+        if (diagnosticsSelectionIdRef.current === selectionKey) {
+            return;
+        }
+        diagnosticsSelectionIdRef.current = selectionKey;
+        setSelectedDiagnosticDomains(new Set(blockedDefaults));
+    }, [diagnostics.diagnosticId, diagnostics.results, diagnostics.status]);
 
     useEffect(() => {
         if (
@@ -497,6 +669,9 @@ function MainApp() {
                             }
                         >
                             {t("tabs.lists")}
+                        </TabsTrigger>
+                        <TabsTrigger value="diagnostics" disabled={busy}>
+                            {t("tabs.diagnostics")}
                         </TabsTrigger>
                         <TabsTrigger
                             value="versions"
@@ -832,6 +1007,380 @@ function MainApp() {
                                     </Button>
                                 </div>
                             </ScrollArea>
+                        </TabsContent>
+
+                        <TabsContent
+                            value="diagnostics"
+                            className="m-0 flex h-full min-h-0 flex-col"
+                        >
+                            <ScrollArea className="min-h-0 flex-1">
+                                <div className="flex min-w-0 flex-col gap-3 p-4">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="text-base font-medium">
+                                                {t(
+                                                    "diagnostics.resultsTitle",
+                                                )}
+                                            </div>
+                                            <div className="mt-1 text-sm text-muted-foreground">
+                                                {diagnostics.results.length ===
+                                                0
+                                                    ? t(
+                                                          "diagnostics.resultsHintEmpty",
+                                                      )
+                                                    : isDiagnosticRunning
+                                                      ? t(
+                                                            "diagnostics.resultsHintRunning",
+                                                        )
+                                                      : t(
+                                                            "diagnostics.resultsHintDone",
+                                                        )}
+                                            </div>
+                                        </div>
+                                        <Dialog>
+                                            <DialogTrigger asChild>
+                                                <Button
+                                                    variant="outline"
+                                                    size="xs"
+                                                    className="shrink-0"
+                                                >
+                                                    {t(
+                                                        "diagnostics.instruction.button",
+                                                    )}
+                                                </Button>
+                                            </DialogTrigger>
+                                            <DialogContent>
+                                                <DialogHeader>
+                                                    <DialogTitle>
+                                                        {t(
+                                                            "diagnostics.instruction.title",
+                                                        )}
+                                                    </DialogTitle>
+                                                    <DialogDescription>
+                                                        {t(
+                                                            "diagnostics.instruction.description",
+                                                        )}
+                                                    </DialogDescription>
+                                                </DialogHeader>
+                                                <div className="flex flex-col gap-4 text-sm">
+                                                    <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/20 p-3">
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="min-w-20 text-xs font-medium text-muted-foreground">
+                                                                {t(
+                                                                    "diagnostics.apiUrl",
+                                                                )}
+                                                            </div>
+                                                            <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1 text-xs">
+                                                                {
+                                                                    state.extensionApiUrl
+                                                                }
+                                                            </code>
+                                                            <Button
+                                                                variant="outline"
+                                                                size="xs"
+                                                                onClick={() =>
+                                                                    void copyText(
+                                                                        state.extensionApiUrl,
+                                                                    )
+                                                                }
+                                                            >
+                                                                {t(
+                                                                    "diagnostics.copy",
+                                                                )}
+                                                            </Button>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="min-w-20 text-xs font-medium text-muted-foreground">
+                                                                {t(
+                                                                    "diagnostics.apiToken",
+                                                                )}
+                                                            </div>
+                                                            <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1 text-xs">
+                                                                {
+                                                                    state.extensionApiToken
+                                                                }
+                                                            </code>
+                                                            <Button
+                                                                variant="outline"
+                                                                size="xs"
+                                                                onClick={() =>
+                                                                    void copyText(
+                                                                        state.extensionApiToken,
+                                                                    )
+                                                                }
+                                                            >
+                                                                {t(
+                                                                    "diagnostics.copy",
+                                                                )}
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="font-medium">
+                                                            {t(
+                                                                "diagnostics.steps.collectTitle",
+                                                            )}
+                                                        </div>
+                                                        <div className="mt-1 text-muted-foreground">
+                                                            {t(
+                                                                "diagnostics.steps.collectText",
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="font-medium">
+                                                            {t(
+                                                                "diagnostics.steps.checkTitle",
+                                                            )}
+                                                        </div>
+                                                        <div className="mt-1 text-muted-foreground">
+                                                            {t(
+                                                                "diagnostics.steps.checkText",
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="font-medium">
+                                                            {t(
+                                                                "diagnostics.steps.applyTitle",
+                                                            )}
+                                                        </div>
+                                                        <div className="mt-1 text-muted-foreground">
+                                                            {t(
+                                                                "diagnostics.steps.applyText",
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </DialogContent>
+                                        </Dialog>
+                                    </div>
+
+                                    <div className="flex min-w-0 flex-col gap-3">
+                                            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                                                <span>
+                                                    {isDiagnosticIdle
+                                                        ? t(
+                                                              "diagnostics.statuses.idle",
+                                                          )
+                                                        : isDiagnosticRunning
+                                                          ? t(
+                                                                "diagnostics.statuses.running",
+                                                            )
+                                                          : isDiagnosticDone
+                                                            ? t(
+                                                                  "diagnostics.statuses.done",
+                                                              )
+                                                            : t(
+                                                                  "diagnostics.statuses.error",
+                                                              )}
+                                                </span>
+                                                <span className="font-medium text-foreground">
+                                                    {diagnosticProgressValue}%
+                                                </span>
+                                            </div>
+                                            <Progress
+                                                value={diagnosticProgressValue}
+                                            />
+                                            {diagnostics.pageUrl && (
+                                                <div className="truncate rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                                    {t(
+                                                        "diagnostics.pageUrl",
+                                                    )}
+                                                    :{" "}
+                                                    <span className="text-foreground">
+                                                        {diagnostics.pageUrl}
+                                                    </span>
+                                                </div>
+                                            )}
+                                            {diagnostics.error && (
+                                                <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                                                    {diagnostics.error}
+                                                </div>
+                                            )}
+                                            <Table className="table-fixed">
+                                                <TableHeader>
+                                                    <TableRow>
+                                                        <TableHead className="w-9">
+                                                            {t(
+                                                                "diagnostics.table.select",
+                                                            )}
+                                                        </TableHead>
+                                                        <TableHead className="w-[34%]">
+                                                            {t(
+                                                                "diagnostics.table.domain",
+                                                            )}
+                                                        </TableHead>
+                                                        <TableHead className="w-20">
+                                                            {t(
+                                                                "diagnostics.table.status",
+                                                            )}
+                                                        </TableHead>
+                                                        <TableHead className="w-24">
+                                                            {t(
+                                                                "diagnostics.table.confidence",
+                                                            )}
+                                                        </TableHead>
+                                                        <TableHead className="w-[34%]">
+                                                            {t(
+                                                                "diagnostics.table.reason",
+                                                            )}
+                                                        </TableHead>
+                                                    </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                    {diagnostics.results
+                                                        .length === 0 ? (
+                                                        <TableRow>
+                                                            <TableCell
+                                                                colSpan={5}
+                                                                className="h-16 text-center text-muted-foreground"
+                                                            >
+                                                                {t(
+                                                                    "diagnostics.table.empty",
+                                                                )}
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    ) : (
+                                                        diagnostics.results.map(
+                                                            (result) => (
+                                                                <TableRow
+                                                                    key={
+                                                                        result.domain
+                                                                    }
+                                                                    data-state={
+                                                                        result.blocked
+                                                                            ? "selected"
+                                                                            : undefined
+                                                                    }
+                                                                >
+                                                                    <TableCell>
+                                                                        <input
+                                                                            type="checkbox"
+                                                                            checked={selectedDiagnosticDomains.has(
+                                                                                result.domain,
+                                                                            )}
+                                                                            disabled={
+                                                                                !result.blocked ||
+                                                                                !isDiagnosticDone
+                                                                            }
+                                                                            onChange={(
+                                                                                event,
+                                                                            ) =>
+                                                                                toggleDiagnosticDomain(
+                                                                                    result.domain,
+                                                                                    event
+                                                                                        .target
+                                                                                        .checked,
+                                                                                )
+                                                                            }
+                                                                        />
+                                                                    </TableCell>
+                                                                    <TableCell>
+                                                                        <div
+                                                                            className="truncate font-medium"
+                                                                            title={
+                                                                                result.domain
+                                                                            }
+                                                                        >
+                                                                            {
+                                                                                result.domain
+                                                                            }
+                                                                        </div>
+                                                                    </TableCell>
+                                                                    <TableCell className="truncate">
+                                                                        <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                                                                            {result.blocked
+                                                                                ? t(
+                                                                                      "diagnostics.resultBlocked",
+                                                                                  )
+                                                                                : result.confidence ===
+                                                                                    "pending"
+                                                                                  ? t(
+                                                                                        "diagnostics.resultPending",
+                                                                                    )
+                                                                                : t(
+                                                                                      "diagnostics.resultUnknown",
+                                                                                  )}
+                                                                        </span>
+                                                                    </TableCell>
+                                                                    <TableCell className="truncate">
+                                                                        <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                                                                            {result.confidence ===
+                                                                            "pending"
+                                                                                ? "-"
+                                                                                : result.confidence}
+                                                                        </span>
+                                                                    </TableCell>
+                                                                    <TableCell>
+                                                                        <div
+                                                                            className="truncate text-muted-foreground"
+                                                                            title={
+                                                                                result
+                                                                                    .reasons
+                                                                                    .length >
+                                                                                0
+                                                                                    ? result.reasons.join(
+                                                                                          ", ",
+                                                                                      )
+                                                                                    : result.rawSummary
+                                                                            }
+                                                                        >
+                                                                            {result
+                                                                                .reasons
+                                                                                .length >
+                                                                            0
+                                                                                ? result.reasons.join(
+                                                                                      ", ",
+                                                                                  )
+                                                                                : result.confidence ===
+                                                                                    "pending"
+                                                                                  ? t(
+                                                                                        "diagnostics.reasonPending",
+                                                                                    )
+                                                                                : result.rawSummary}
+                                                                        </div>
+                                                                    </TableCell>
+                                                                </TableRow>
+                                                            ),
+                                                        )
+                                                    )}
+                                                </TableBody>
+                                            </Table>
+                                    </div>
+                                </div>
+                            </ScrollArea>
+
+                            <div className="flex h-[92px] shrink-0 flex-col gap-2 border-t border-border bg-card/95 px-4 py-3">
+                                        <Button
+                                            disabled={
+                                                !canApplyDiagnosticDomains
+                                            }
+                                            onClick={() =>
+                                                void applyDiagnosticDomains()
+                                            }
+                                        >
+                                            {t(
+                                                "diagnostics.applyAndRestart",
+                                                {
+                                                    count: selectedDiagnosticsCount,
+                                                },
+                                            )}
+                                        </Button>
+                                        <div className="text-wrap text-xs text-muted-foreground">
+                                            {isDiagnosticRunning
+                                                ? t(
+                                                      "diagnostics.applyDisabledRunning",
+                                                  )
+                                                : isDiagnosticDone
+                                                  ? t(
+                                                        "diagnostics.applyReadyHint",
+                                                    )
+                                                  : t(
+                                                        "diagnostics.applyDisabledIdle",
+                                            )}
+                                        </div>
+                            </div>
                         </TabsContent>
 
                         <TabsContent value="versions" className="m-0 h-full">

@@ -6,24 +6,27 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
 use windows::core::HSTRING;
 use windows::Win32::Foundation::{GetLastError, BOOL, ERROR_ALREADY_EXISTS, HWND, LPARAM};
+use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Shell::IsUserAnAdmin;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
     MessageBoxW, ShowWindow, MB_ICONERROR, MB_OK, SW_HIDE,
 };
-use windows::Win32::System::Threading::CreateMutexW;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -52,8 +55,15 @@ const USER_LIST_GENERAL_FILE: &str = "list-general-user.txt";
 const USER_LIST_EXCLUDE_FILE: &str = "list-exclude-user.txt";
 const USER_LIST_IPSET_EXCLUDE_FILE: &str = "ipset-exclude-user.txt";
 const DEBUG_LOG_FILE: &str = "debug_logs.txt";
+const EXTENSION_API_HOST: &str = "127.0.0.1";
+const EXTENSION_API_PORT: u16 = 39876;
+const EXTENSION_DIAGNOSTICS_EVENT: &str = "extension-diagnostics-changed";
+const OPEN_DIAGNOSTICS_TAB_EVENT: &str = "open-diagnostics-tab";
+const DPI_DETECTOR_DIR: &str = "dpi-detector";
+const DPI_DETECTOR_TIMEOUT_SECS: u64 = 90;
 static CONFIG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static DEBUG_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
+static EXTENSION_DIAGNOSTICS_STATE: OnceLock<Mutex<ExtensionDiagnosticsState>> = OnceLock::new();
 
 #[derive(Default)]
 struct AppFlags {
@@ -81,6 +91,8 @@ struct AppConfig {
     last_update_notification: Option<String>,
     #[serde(default)]
     debug_mode: bool,
+    #[serde(default)]
+    extension_api_token: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -91,6 +103,75 @@ impl Default for AppConfig {
             notify_update_available: true,
             last_update_notification: None,
             debug_mode: false,
+            extension_api_token: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionRequestEvidence {
+    url: String,
+    domain: String,
+    #[serde(rename = "type")]
+    request_type: Option<String>,
+    status_code: Option<u16>,
+    error: Option<String>,
+    initiator: Option<String>,
+    final_state: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionDiagnosticsPayload {
+    page_url: String,
+    started_at: Option<String>,
+    requests: Vec<ExtensionRequestEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionDiagnosticsResponse {
+    accepted: bool,
+    diagnostic_id: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionDomainDiagnostic {
+    domain: String,
+    blocked: bool,
+    confidence: String,
+    reasons: Vec<String>,
+    raw_summary: String,
+    selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionDiagnosticsState {
+    status: String,
+    diagnostic_id: Option<String>,
+    page_url: Option<String>,
+    started_at: Option<String>,
+    checked_at: Option<String>,
+    error: Option<String>,
+    domains_total: usize,
+    results: Vec<ExtensionDomainDiagnostic>,
+}
+
+impl Default for ExtensionDiagnosticsState {
+    fn default() -> Self {
+        Self {
+            status: "idle".to_string(),
+            diagnostic_id: None,
+            page_url: None,
+            started_at: None,
+            checked_at: None,
+            error: None,
+            domains_total: 0,
+            results: Vec::new(),
         }
     }
 }
@@ -162,6 +243,9 @@ struct UiState {
     list_general_user: String,
     list_exclude_user: String,
     ipset_exclude_user: String,
+    extension_api_url: String,
+    extension_api_token: String,
+    extension_diagnostics: ExtensionDiagnosticsState,
 }
 
 #[derive(Debug, Deserialize)]
@@ -252,7 +336,8 @@ fn load_config_unlocked() -> Result<AppConfig, String> {
 
     let mut file = File::open(&cfg_path).map_err(|e| e.to_string())?;
     let mut content = String::new();
-    file.read_to_string(&mut content).map_err(|e| e.to_string())?;
+    file.read_to_string(&mut content)
+        .map_err(|e| e.to_string())?;
 
     serde_json::from_str(&content).map_err(|e| format!("Config parse error: {e}"))
 }
@@ -261,7 +346,8 @@ fn save_config_unlocked(config: &AppConfig) -> Result<(), String> {
     let cfg_path = config_path()?;
     let content = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
     let mut file = File::create(&cfg_path).map_err(|e| e.to_string())?;
-    file.write_all(content.as_bytes()).map_err(|e| e.to_string())
+    file.write_all(content.as_bytes())
+        .map_err(|e| e.to_string())
 }
 
 fn load_config() -> Result<AppConfig, String> {
@@ -284,6 +370,120 @@ fn mutate_config<T>(
         save_config_unlocked(&config)?;
         Ok(result)
     })
+}
+
+fn generate_extension_api_token() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    format!("zprt-{now:x}-{pid:x}")
+}
+
+fn ensure_extension_api_token() -> Result<String, String> {
+    mutate_config(|config| {
+        if config
+            .extension_api_token
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+        {
+            config.extension_api_token = Some(generate_extension_api_token());
+        }
+        Ok(config.extension_api_token.clone().unwrap_or_default())
+    })
+}
+
+fn extension_api_url() -> String {
+    format!("http://{EXTENSION_API_HOST}:{EXTENSION_API_PORT}")
+}
+
+fn diagnostics_state_lock() -> &'static Mutex<ExtensionDiagnosticsState> {
+    EXTENSION_DIAGNOSTICS_STATE.get_or_init(|| Mutex::new(ExtensionDiagnosticsState::default()))
+}
+
+fn get_extension_diagnostics_state() -> ExtensionDiagnosticsState {
+    diagnostics_state_lock()
+        .lock()
+        .map(|state| state.clone())
+        .unwrap_or_default()
+}
+
+fn set_extension_diagnostics_state(
+    app: Option<&AppHandle>,
+    updater: impl FnOnce(&mut ExtensionDiagnosticsState),
+) {
+    if let Ok(mut state) = diagnostics_state_lock().lock() {
+        updater(&mut state);
+    }
+    if let Some(app) = app {
+        let _ = app.emit(EXTENSION_DIAGNOSTICS_EVENT, ());
+    }
+}
+
+fn current_moscow_timestamp() -> String {
+    let moscow = FixedOffset::east_opt(3 * 60 * 60);
+    match moscow {
+        Some(tz) => Utc::now()
+            .with_timezone(&tz)
+            .format("%Y-%m-%d %H:%M:%S UTC+3")
+            .to_string(),
+        None => Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+    }
+}
+
+fn normalize_domain(input: &str) -> Option<String> {
+    let mut value = input.trim().trim_end_matches('.').to_ascii_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+    if value.starts_with("http://") || value.starts_with("https://") {
+        let without_scheme = value
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(value.as_str());
+        value = without_scheme
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .to_string();
+    }
+    if let Some((host, _port)) = value.rsplit_once(':') {
+        if !host.contains(']') {
+            value = host.to_string();
+        }
+    }
+    value = value.trim_matches('[').trim_matches(']').to_string();
+
+    let valid = value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
+        && value.contains('.')
+        && !value.starts_with('.')
+        && !value.ends_with('.');
+    if valid {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn unique_domains_from_payload(payload: &ExtensionDiagnosticsPayload) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut domains = Vec::new();
+    for request in &payload.requests {
+        if let Some(domain) = normalize_domain(&request.domain) {
+            if seen.insert(domain.clone()) {
+                domains.push(domain);
+            }
+        }
+    }
+    domains.sort_by(|a, b| natural_sort_cmp(a, b));
+    domains
 }
 
 fn normalize_version(input: &str) -> String {
@@ -380,7 +580,11 @@ fn natural_sort_cmp(left: &str, right: &str) -> Ordering {
             let right_trim = right_num.trim_start_matches('0');
 
             let left_norm = if left_trim.is_empty() { "0" } else { left_trim };
-            let right_norm = if right_trim.is_empty() { "0" } else { right_trim };
+            let right_norm = if right_trim.is_empty() {
+                "0"
+            } else {
+                right_trim
+            };
 
             match left_norm.len().cmp(&right_norm.len()) {
                 Ordering::Less => return Ordering::Less,
@@ -437,6 +641,351 @@ fn sync_user_lists_to_active_version(config: &AppConfig) -> Result<(), String> {
     fs::copy(src_exclude, dst_exclude).map_err(|e| e.to_string())?;
     fs::copy(src_ipset_exclude, dst_ipset_exclude).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn append_domains_to_user_general_list(domains: &[String]) -> Result<usize, String> {
+    let (general_path, _, _) = user_list_paths()?;
+    let current = read_text_if_exists(&general_path)?;
+    let mut lines: Vec<String> = current.lines().map(|line| line.to_string()).collect();
+    let mut existing: HashSet<String> = current.lines().filter_map(normalize_domain).collect();
+    let mut added = 0usize;
+
+    for domain in domains {
+        let Some(normalized) = normalize_domain(domain) else {
+            continue;
+        };
+        if existing.insert(normalized.clone()) {
+            lines.push(normalized);
+            added += 1;
+        }
+    }
+
+    if added > 0 {
+        let mut next = lines.join("\n");
+        if !next.is_empty() {
+            next.push('\n');
+        }
+        fs::write(general_path, next).map_err(|e| e.to_string())?;
+    }
+
+    Ok(added)
+}
+
+fn find_dpi_detector_exe() -> Result<PathBuf, String> {
+    let base = app_base_dir()?;
+    let candidates = [base.join(DPI_DETECTOR_DIR), base.clone()];
+
+    for dir in candidates {
+        if !dir.exists() {
+            continue;
+        }
+        let mut stack = vec![dir];
+        while let Some(current) = stack.pop() {
+            for entry in fs::read_dir(&current).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let Some(name) = path
+                    .file_name()
+                    .map(|v| v.to_string_lossy().to_ascii_lowercase())
+                else {
+                    continue;
+                };
+                if name.starts_with("dpi_detector") && name.ends_with(".exe") {
+                    return Ok(path);
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "dpi-detector не найден. Положите dpi_detector_*_win10.exe в папку {DPI_DETECTOR_DIR} рядом с ZPRT App.exe."
+    ))
+}
+
+fn run_command_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<(bool, String, String), String> {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let started = Instant::now();
+    loop {
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            let output = child.wait_with_output().map_err(|e| e.to_string())?;
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return Ok((output.status.success(), stdout, stderr));
+        }
+
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let output = child.wait_with_output().map_err(|e| e.to_string())?;
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return Err(format!(
+                "Таймаут dpi-detector через {} сек. stdout: {} stderr: {}",
+                timeout.as_secs(),
+                stdout.trim(),
+                stderr.trim()
+            ));
+        }
+
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn classify_dpi_detector_output(domain: &str, raw: &str) -> ExtensionDomainDiagnostic {
+    let lower = raw.to_ascii_lowercase();
+    let checks = [
+        ("TCP RST", ["rst", "reset"].as_slice()),
+        (
+            "Connection Abort",
+            ["abort", "connection aborted"].as_slice(),
+        ),
+        (
+            "Timeout",
+            ["timeout", "read timeout", "handshake timeout"].as_slice(),
+        ),
+        ("TLS/SNI block", ["sni", "tls mitm", "handshake"].as_slice()),
+        ("DNS block", ["dns", "подмен", "перехват"].as_slice()),
+        ("TCP 16-20KB", ["16-20", "16kb", "20kb", "tcp16"].as_slice()),
+    ];
+
+    let mut reasons = Vec::new();
+    for (label, markers) in checks {
+        if markers.iter().any(|marker| lower.contains(marker)) {
+            reasons.push(label.to_string());
+        }
+    }
+
+    let negative_markers = [
+        "не обнаруж",
+        "not detected",
+        "доступен",
+        "available",
+        "ok",
+        "успеш",
+    ];
+    let has_negative = negative_markers.iter().any(|marker| lower.contains(marker));
+    let blocked = !reasons.is_empty() && !has_negative;
+    let confidence = if blocked && reasons.len() >= 2 {
+        "high"
+    } else if blocked {
+        "medium"
+    } else if !reasons.is_empty() {
+        "low"
+    } else {
+        "unknown"
+    }
+    .to_string();
+
+    let raw_summary = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(12)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    ExtensionDomainDiagnostic {
+        domain: domain.to_string(),
+        blocked,
+        confidence,
+        reasons,
+        raw_summary,
+        selected: blocked,
+    }
+}
+
+fn browser_evidence_reasons(domain: &str, requests: &[ExtensionRequestEvidence]) -> Vec<String> {
+    let mut reasons = Vec::new();
+    for request in requests {
+        let Some(request_domain) = normalize_domain(&request.domain) else {
+            continue;
+        };
+        if request_domain != domain {
+            continue;
+        }
+
+        let error = request.error.as_deref().unwrap_or("").to_ascii_lowercase();
+        let final_state = request
+            .final_state
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if error == "zprt-timeout" {
+            reasons.push("Browser pending timeout".to_string());
+        } else if error == "zprt-page-check" {
+            reasons.push("Page domain forced check".to_string());
+        } else if !error.is_empty() || final_state == "error" {
+            reasons.push(format!(
+                "Browser error{}",
+                if error.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {error}")
+                }
+            ));
+        }
+    }
+    reasons.sort();
+    reasons.dedup();
+    reasons
+}
+
+fn merge_browser_evidence(
+    mut result: ExtensionDomainDiagnostic,
+    requests: &[ExtensionRequestEvidence],
+) -> ExtensionDomainDiagnostic {
+    let browser_reasons = browser_evidence_reasons(&result.domain, requests);
+    let has_browser_problem = browser_reasons
+        .iter()
+        .any(|reason| reason != "Page domain forced check");
+    for reason in browser_reasons {
+        if !result.reasons.iter().any(|existing| existing == &reason) {
+            result.reasons.push(reason);
+        }
+    }
+
+    if has_browser_problem && !result.blocked {
+        result.blocked = true;
+        result.confidence = "medium".to_string();
+        result.selected = true;
+    }
+
+    result
+}
+
+fn pending_domain_diagnostic(domain: &str) -> ExtensionDomainDiagnostic {
+    ExtensionDomainDiagnostic {
+        domain: domain.to_string(),
+        blocked: false,
+        confidence: "pending".to_string(),
+        reasons: Vec::new(),
+        raw_summary: String::new(),
+        selected: false,
+    }
+}
+
+fn run_dpi_detector_for_domain(
+    exe: &Path,
+    domain: &str,
+    requests: &[ExtensionRequestEvidence],
+) -> ExtensionDomainDiagnostic {
+    let mut command = Command::new(exe);
+    command.args(["--batch", "-t", "3", "-d", domain]);
+    if let Some(parent) = exe.parent() {
+        command.current_dir(parent);
+    }
+
+    match run_command_with_timeout(command, Duration::from_secs(DPI_DETECTOR_TIMEOUT_SECS)) {
+        Ok((_success, stdout, stderr)) => {
+            let raw = format!("{stdout}\n{stderr}");
+            debug_log_error(
+                "dpi_detector.output",
+                &format!("domain={domain}\n{}", raw.trim()),
+            );
+            merge_browser_evidence(classify_dpi_detector_output(domain, &raw), requests)
+        }
+        Err(err) => {
+            debug_log_error("dpi_detector.error", &format!("domain={domain}: {err}"));
+            merge_browser_evidence(
+                ExtensionDomainDiagnostic {
+                    domain: domain.to_string(),
+                    blocked: false,
+                    confidence: "unknown".to_string(),
+                    reasons: Vec::new(),
+                    raw_summary: err,
+                    selected: false,
+                },
+                requests,
+            )
+        }
+    }
+}
+
+fn start_extension_diagnostics(
+    app: AppHandle,
+    payload: ExtensionDiagnosticsPayload,
+) -> Result<String, String> {
+    let domains = unique_domains_from_payload(&payload);
+    if domains.is_empty() {
+        return Err("Расширение не передало домены для проверки".to_string());
+    }
+
+    let diagnostic_id = format!(
+        "diag-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let page_url = payload.page_url.clone();
+    let started_at = payload.started_at.clone();
+    let requests = payload.requests.clone();
+
+    set_extension_diagnostics_state(Some(&app), |state| {
+        state.status = "running".to_string();
+        state.diagnostic_id = Some(diagnostic_id.clone());
+        state.page_url = Some(page_url.clone());
+        state.started_at = started_at.clone();
+        state.checked_at = None;
+        state.error = None;
+        state.domains_total = domains.len();
+        state.results = domains
+            .iter()
+            .map(|domain| pending_domain_diagnostic(domain))
+            .collect();
+    });
+
+    show_main_window(&app);
+    let _ = app.emit(OPEN_DIAGNOSTICS_TAB_EVENT, ());
+
+    thread::spawn(move || {
+        let exe = match find_dpi_detector_exe() {
+            Ok(path) => path,
+            Err(err) => {
+                set_extension_diagnostics_state(Some(&app), |state| {
+                    state.status = "error".to_string();
+                    state.error = Some(err);
+                    state.checked_at = Some(current_moscow_timestamp());
+                });
+                return;
+            }
+        };
+
+        let mut results = domains
+            .iter()
+            .map(|domain| pending_domain_diagnostic(domain))
+            .collect::<Vec<_>>();
+        for domain in &domains {
+            let result = run_dpi_detector_for_domain(&exe, domain, &requests);
+            if let Some(slot) = results.iter_mut().find(|item| item.domain == result.domain) {
+                *slot = result;
+            }
+            let snapshot = results.clone();
+            set_extension_diagnostics_state(Some(&app), |state| {
+                state.results = snapshot;
+            });
+        }
+
+        set_extension_diagnostics_state(Some(&app), |state| {
+            state.status = "done".to_string();
+            state.results = results;
+            state.checked_at = Some(current_moscow_timestamp());
+            state.error = None;
+        });
+    });
+
+    Ok(diagnostic_id)
 }
 
 fn read_text_if_exists(path: &Path) -> Result<String, String> {
@@ -512,7 +1061,14 @@ Register-ScheduledTask -TaskName '{task}' -Action $action -Trigger $trigger -Pri
             task = escaped_task
         );
         let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
             .output()
             .map_err(|e| e.to_string())?;
 
@@ -563,7 +1119,10 @@ Register-ScheduledTask -TaskName '{task}' -Action $action -Trigger $trigger -Pri
 fn github_client() -> Result<reqwest::Client, String> {
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static("zprt-app"));
-    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github+json"));
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github+json"),
+    );
 
     reqwest::Client::builder()
         .default_headers(headers)
@@ -578,14 +1137,15 @@ async fn fetch_latest_release() -> Result<GithubRelease, String> {
         .await
         .map_err(|e| e.to_string())
     {
-        Ok(response) if response.status().is_success() => {
-            response.json::<GithubRelease>().await.map_err(|e| e.to_string())
-        }
+        Ok(response) if response.status().is_success() => response
+            .json::<GithubRelease>()
+            .await
+            .map_err(|e| e.to_string()),
         Ok(response) => {
             let api_error = format!("GitHub API error: {}", response.status());
-            fetch_latest_release_via_html().await.map_err(|html_error| {
-                format!("{api_error}. HTML fallback error: {html_error}")
-            })
+            fetch_latest_release_via_html()
+                .await
+                .map_err(|html_error| format!("{api_error}. HTML fallback error: {html_error}"))
         }
         Err(api_error) => fetch_latest_release_via_html()
             .await
@@ -909,7 +1469,9 @@ fn hide_winws_windows() {
         }
 
         let mut pid = 0u32;
-        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32)); }
+        unsafe {
+            GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
+        }
 
         let pids = unsafe { &*set_ptr };
         let title = get_window_text(hwnd).to_ascii_lowercase();
@@ -1027,6 +1589,7 @@ fn stop_strategy_impl() -> Result<(), String> {
 }
 
 async fn build_ui_state() -> Result<UiState, String> {
+    let extension_api_token = ensure_extension_api_token()?;
     let installed_versions = list_installed_versions()?;
     let (config, strategies) = mutate_config(|config| {
         if config.active_version.is_none() && !installed_versions.is_empty() {
@@ -1053,19 +1616,22 @@ async fn build_ui_state() -> Result<UiState, String> {
     let (list_general_user, list_exclude_user, ipset_exclude_user) = read_user_list_files()?;
 
     let latest = fetch_latest_release().await.ok();
-    let latest_version = latest
-        .as_ref()
-        .map(|r| normalize_version(&r.tag_name));
+    let latest_version = latest.as_ref().map(|r| normalize_version(&r.tag_name));
     let latest_release_url = latest.as_ref().and_then(|r| r.html_url.clone());
 
     let newest_installed = installed_versions.first().cloned();
     let update_available = match (&newest_installed, &latest_version) {
-        (Some(installed), Some(latest)) => normalize_version(installed) != normalize_version(latest),
+        (Some(installed), Some(latest)) => {
+            normalize_version(installed) != normalize_version(latest)
+        }
         (None, Some(_)) => true,
         _ => false,
     };
     let update_notification_needed = if update_available && config.notify_update_available {
-        match (latest_version.as_deref(), config.last_update_notification.as_deref()) {
+        match (
+            latest_version.as_deref(),
+            config.last_update_notification.as_deref(),
+        ) {
             (Some(latest), Some(last)) => is_version_greater_than(latest, last),
             (Some(_), None) => true,
             _ => false,
@@ -1089,6 +1655,9 @@ async fn build_ui_state() -> Result<UiState, String> {
         list_general_user,
         list_exclude_user,
         ipset_exclude_user,
+        extension_api_url: extension_api_url(),
+        extension_api_token,
+        extension_diagnostics: get_extension_diagnostics_state(),
     })
 }
 
@@ -1327,7 +1896,10 @@ async fn hide_update_toast(app: AppHandle) -> Result<(), String> {
 async fn open_main_versions_from_toast(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(UPDATE_TOAST_WINDOW_LABEL) {
         if let Err(err) = window.hide() {
-            debug_log_error("open_main_versions_from_toast.window.hide", &err.to_string());
+            debug_log_error(
+                "open_main_versions_from_toast.window.hide",
+                &err.to_string(),
+            );
         }
     }
 
@@ -1349,6 +1921,39 @@ async fn save_user_list_file(list_kind: String, content: String) -> Result<(), S
 
     fs::write(target, content).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+async fn load_extension_diagnostics_state() -> Result<ExtensionDiagnosticsState, String> {
+    Ok(get_extension_diagnostics_state())
+}
+
+#[tauri::command]
+async fn apply_extension_diagnostic_domains(
+    app: AppHandle,
+    domains: Vec<String>,
+) -> Result<usize, String> {
+    let normalized = domains
+        .iter()
+        .filter_map(|domain| normalize_domain(domain))
+        .collect::<Vec<_>>();
+    if normalized.is_empty() {
+        return Err("Нет доменов для добавления".to_string());
+    }
+
+    let added = append_domains_to_user_general_list(&normalized)?;
+    let was_running = is_winws_running();
+    if was_running {
+        stop_strategy_impl()?;
+        start_strategy_impl()?;
+        set_tray_icon_for_state(&app, true);
+        apply_tray_menu_state(&app, true);
+    } else {
+        set_tray_icon_for_state(&app, false);
+        apply_tray_menu_state(&app, false);
+    }
+    emit_bypass_state_changed(&app);
+    Ok(added)
 }
 
 #[tauri::command]
@@ -1378,6 +1983,195 @@ fn show_main_window(app: &AppHandle) {
         }
     }
     emit_bypass_state_changed(app);
+}
+
+fn http_response(status: &str, content_type: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-ZPRT-Token\r\nConnection: close\r\n\r\n{body}",
+        body.as_bytes().len()
+    )
+}
+
+fn write_http_response(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
+    let response = http_response(status, content_type, body);
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn extract_header(headers: &[&str], name: &str) -> Option<String> {
+    let prefix = format!("{}:", name.to_ascii_lowercase());
+    headers.iter().find_map(|line| {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with(&prefix) {
+            Some(line[prefix.len()..].trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn read_http_request(
+    stream: &mut TcpStream,
+) -> Result<(String, String, Vec<String>, String), String> {
+    let mut buffer = Vec::new();
+    let mut temp = [0u8; 4096];
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+
+    loop {
+        let read = stream.read(&mut temp).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp[..read]);
+        if buffer.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+        if buffer.len() > 1024 * 1024 {
+            return Err("HTTP request is too large".to_string());
+        }
+    }
+
+    let header_end = buffer
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| "Invalid HTTP request".to_string())?;
+    let headers_raw = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+    let mut header_lines = headers_raw.lines();
+    let request_line = header_lines
+        .next()
+        .ok_or_else(|| "Missing HTTP request line".to_string())?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or("").to_string();
+    let path = request_parts.next().unwrap_or("").to_string();
+    let headers: Vec<String> = header_lines.map(|line| line.to_string()).collect();
+    let header_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+    let content_length = extract_header(&header_refs, "content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+
+    let body_start = header_end + 4;
+    while buffer.len().saturating_sub(body_start) < content_length {
+        let read = stream.read(&mut temp).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp[..read]);
+        if buffer.len() > 2 * 1024 * 1024 {
+            return Err("HTTP request body is too large".to_string());
+        }
+    }
+
+    let body_end = (body_start + content_length).min(buffer.len());
+    let body = String::from_utf8_lossy(&buffer[body_start..body_end]).to_string();
+    Ok((method, path, headers, body))
+}
+
+fn handle_extension_http_client(app: AppHandle, mut stream: TcpStream) {
+    let request = read_http_request(&mut stream);
+    let Ok((method, path, headers, body)) = request else {
+        write_http_response(
+            &mut stream,
+            "400 Bad Request",
+            "application/json",
+            r#"{"error":"bad request"}"#,
+        );
+        return;
+    };
+
+    if method == "OPTIONS" {
+        write_http_response(&mut stream, "204 No Content", "text/plain", "");
+        return;
+    }
+
+    if method == "GET" && path == "/api/extension/health" {
+        let body = serde_json::json!({
+            "ok": true,
+            "app": "ZPRT App",
+            "apiUrl": extension_api_url()
+        })
+        .to_string();
+        write_http_response(&mut stream, "200 OK", "application/json", &body);
+        return;
+    }
+
+    let header_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+    let provided_token = extract_header(&header_refs, "x-zprt-token").unwrap_or_default();
+    let expected_token = match ensure_extension_api_token() {
+        Ok(token) => token,
+        Err(err) => {
+            let body = serde_json::json!({ "error": err }).to_string();
+            write_http_response(
+                &mut stream,
+                "500 Internal Server Error",
+                "application/json",
+                &body,
+            );
+            return;
+        }
+    };
+
+    if provided_token != expected_token {
+        write_http_response(
+            &mut stream,
+            "401 Unauthorized",
+            "application/json",
+            r#"{"error":"unauthorized"}"#,
+        );
+        return;
+    }
+
+    if method == "POST" && path == "/api/extension/diagnostics" {
+        match serde_json::from_str::<ExtensionDiagnosticsPayload>(&body)
+            .map_err(|e| e.to_string())
+            .and_then(|payload| start_extension_diagnostics(app, payload))
+        {
+            Ok(diagnostic_id) => {
+                let response = ExtensionDiagnosticsResponse {
+                    accepted: true,
+                    diagnostic_id,
+                    message: "Диагностика запущена в ZPRT App".to_string(),
+                };
+                let body = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+                write_http_response(&mut stream, "202 Accepted", "application/json", &body);
+            }
+            Err(err) => {
+                let body = serde_json::json!({ "error": err }).to_string();
+                write_http_response(&mut stream, "400 Bad Request", "application/json", &body);
+            }
+        }
+        return;
+    }
+
+    write_http_response(
+        &mut stream,
+        "404 Not Found",
+        "application/json",
+        r#"{"error":"not found"}"#,
+    );
+}
+
+fn start_extension_api_server(app: AppHandle) {
+    thread::spawn(move || {
+        let addr = format!("{EXTENSION_API_HOST}:{EXTENSION_API_PORT}");
+        let listener = match TcpListener::bind(&addr) {
+            Ok(listener) => listener,
+            Err(err) => {
+                debug_log_error("extension_api.bind", &format!("{addr}: {err}"));
+                return;
+            }
+        };
+
+        for incoming in listener.incoming() {
+            match incoming {
+                Ok(stream) => {
+                    let app = app.clone();
+                    thread::spawn(move || handle_extension_http_client(app, stream));
+                }
+                Err(err) => debug_log_error("extension_api.accept", &err.to_string()),
+            }
+        }
+    });
 }
 
 fn build_tray_circle_icon(r: u8, g: u8, b: u8) -> tauri::image::Image<'static> {
@@ -1485,10 +2279,16 @@ fn show_custom_update_notification(app: &AppHandle, latest_version: &str) -> Res
 
     let payload = format!("Доступна новая версия zapret: {latest_version}");
     if let Err(err) = window.emit(UPDATE_TOAST_EVENT, payload) {
-        debug_log_error("show_custom_update_notification.window.emit", &err.to_string());
+        debug_log_error(
+            "show_custom_update_notification.window.emit",
+            &err.to_string(),
+        );
     }
     if let Err(err) = window.show() {
-        debug_log_error("show_custom_update_notification.window.show", &err.to_string());
+        debug_log_error(
+            "show_custom_update_notification.window.show",
+            &err.to_string(),
+        );
     }
 
     let hide_seq = if let Some(flags) = app.try_state::<AppFlags>() {
@@ -1514,7 +2314,10 @@ fn show_custom_update_notification(app: &AppHandle, latest_version: &str) -> Res
         if should_hide {
             if let Some(win) = app_handle.get_webview_window(UPDATE_TOAST_WINDOW_LABEL) {
                 if let Err(err) = win.hide() {
-                    debug_log_error("show_custom_update_notification.auto_hide.window.hide", &err.to_string());
+                    debug_log_error(
+                        "show_custom_update_notification.auto_hide.window.hide",
+                        &err.to_string(),
+                    );
                 }
             }
         }
@@ -1563,11 +2366,9 @@ async fn check_and_notify_new_zapret_version(app: &AppHandle) -> Result<(), Stri
 }
 
 fn start_update_check_worker(app: AppHandle) {
-    thread::spawn(move || {
-        loop {
-            let _ = tauri::async_runtime::block_on(check_and_notify_new_zapret_version(&app));
-            thread::sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
-        }
+    thread::spawn(move || loop {
+        let _ = tauri::async_runtime::block_on(check_and_notify_new_zapret_version(&app));
+        thread::sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
     });
 }
 
@@ -1647,7 +2448,10 @@ fn build_tray_menu_for_state(
             ],
         )
     } else {
-        Menu::with_items(app, &[&show_item, &start_item, &strategy_submenu, &quit_item])
+        Menu::with_items(
+            app,
+            &[&show_item, &start_item, &strategy_submenu, &quit_item],
+        )
     }
 }
 
@@ -1801,6 +2605,8 @@ pub fn run() {
         .setup(move |app| {
             setup_tray(app.handle())?;
             set_tray_icon_for_state(app.handle(), is_winws_running());
+            let _ = ensure_extension_api_token();
+            start_extension_api_server(app.handle().clone());
             let _ = user_list_paths();
             if let Err(err) = ensure_update_toast_window(app.handle()) {
                 debug_log_error("run.setup.ensure_update_toast_window", &err);
@@ -1881,6 +2687,8 @@ pub fn run() {
             hide_update_toast,
             open_main_versions_from_toast,
             save_user_list_file,
+            load_extension_diagnostics_state,
+            apply_extension_diagnostic_domains,
             log_frontend_error,
             frontend_ready,
         ])
@@ -1890,5 +2698,3 @@ pub fn run() {
             panic!("error while running tauri application: {err}");
         });
 }
-
-
