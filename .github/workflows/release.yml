@@ -65,12 +65,12 @@ jobs:
 
           $tag = "v$version"
 
-          git ls-remote --exit-code --tags origin "refs/tags/$tag" | Out-Null
-          if ($LASTEXITCODE -eq 0) {
-            throw "Тег $tag уже существует."
-          }
-          if ($LASTEXITCODE -ne 2) {
+          $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) {
             throw "Не удалось проверить наличие тега $tag."
+          }
+          if (-not [string]::IsNullOrWhiteSpace(($remoteTag -join "`n"))) {
+            throw "Тег $tag уже существует."
           }
 
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
