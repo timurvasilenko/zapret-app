@@ -65,20 +65,33 @@ jobs:
 
           $tag = "v$version"
 
-          $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
+          $remoteTag = @(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")
           if ($LASTEXITCODE -ne 0) {
             throw "Не удалось проверить наличие тега $tag."
           }
-          if (-not [string]::IsNullOrWhiteSpace(($remoteTag -join "`n"))) {
-            throw "Тег $tag уже существует."
+          $tagExists = $remoteTag.Count -gt 0
+          $tagCommit = $null
+          if ($tagExists) {
+            $peeledTag = $remoteTag | Where-Object { $_ -match "\^\{\}$" } | Select-Object -First 1
+            if ($peeledTag) {
+              $tagCommit = ($peeledTag -split "\s+")[0]
+            } else {
+              $tagCommit = (($remoteTag | Select-Object -First 1) -split "\s+")[0]
+            }
+            if ($tagCommit -ne "${{ github.sha }}") {
+              throw "Тег $tag уже существует и указывает на другой коммит."
+            }
+            Write-Host "Tag $tag already points to this commit; reusing it."
           }
 
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag_exists=$tagExists" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Release version: $version"
           Write-Host "Tag: $tag"
 
       - name: Create release tag
+        if: steps.meta.outputs.tag_exists != 'True'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -134,14 +147,14 @@ jobs:
             (Get-Content $cargoLockPath -Raw)
           ).Groups[0].Value -replace '(?s).*version = "([^"]+)".*', '$1'
 
-          $resolvedVersions = @(
+          $resolvedVersions = @(@(
             $tauriVersion,
             $packageVersion,
             $packageLockVersion,
             $packageLockRootVersion,
             $cargoVersion,
             $cargoLockVersion
-          ) | Select-Object -Unique
+          ) | Select-Object -Unique)
 
           if ($resolvedVersions.Count -ne 1 -or $resolvedVersions[0] -ne $version) {
             throw "Версии файлов сборки не синхронизированы: $($resolvedVersions -join ', ')"
