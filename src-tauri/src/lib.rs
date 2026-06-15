@@ -70,13 +70,20 @@ fn config_lock() -> &'static Mutex<()> {
     CONFIG_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct BadVersion {
+    zapret_version: String,
+    zprt_app_version: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AppConfig {
     active_version: Option<String>,
     selected_strategy: Option<String>,
     #[serde(default)]
-    bad_versions: Vec<String>,
+    bad_versions: Vec<BadVersion>,
     #[serde(default = "default_true")]
     notify_update_available: bool,
     #[serde(default)]
@@ -152,7 +159,8 @@ fn append_log_line(context: &str, error: &str) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 struct UiState {
     installed_versions: Vec<String>,
-    bad_versions: Vec<String>,
+    bad_versions: Vec<BadVersion>,
+    repairable_bad_versions: Vec<String>,
     active_version: Option<String>,
     latest_version: Option<String>,
     latest_release_url: Option<String>,
@@ -174,6 +182,20 @@ struct InstallLatestResult {
     installed: bool,
     unsupported: bool,
     version: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepairBadVersionsRequest {
+    selected_versions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepairBadVersionResult {
+    version: String,
+    status: String,
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -420,14 +442,56 @@ fn validate_prepared_version(version: &str, version_dir: &Path) -> Result<(), Ve
 }
 
 fn set_version_compatibility(version: &str, supported: bool) -> Result<(), String> {
+    let current_app_version = env!("CARGO_PKG_VERSION").to_string();
     mutate_config(|config| {
         if supported {
-            config.bad_versions.retain(|item| item != version);
-        } else if !config.bad_versions.iter().any(|item| item == version) {
-            config.bad_versions.push(version.to_string());
+            config
+                .bad_versions
+                .retain(|item| item.zapret_version != version);
+        } else if let Some(item) = config
+            .bad_versions
+            .iter_mut()
+            .find(|item| item.zapret_version == version)
+        {
+            item.zprt_app_version = current_app_version.clone();
+        } else {
+            config.bad_versions.push(BadVersion {
+                zapret_version: version.to_string(),
+                zprt_app_version: current_app_version.clone(),
+            });
         }
         Ok(())
     })
+}
+
+fn is_older_app_version(candidate: &str, current: &str) -> bool {
+    match (
+        Version::parse(candidate.trim_start_matches('v')),
+        Version::parse(current.trim_start_matches('v')),
+    ) {
+        (Ok(candidate), Ok(current)) => candidate < current,
+        _ => candidate != current,
+    }
+}
+
+fn repairable_bad_versions(config: &AppConfig) -> Vec<String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let mut versions = config
+        .bad_versions
+        .iter()
+        .filter(|entry| is_older_app_version(&entry.zprt_app_version, current))
+        .map(|entry| entry.zapret_version.clone())
+        .collect::<Vec<_>>();
+    versions.sort_by(|a, b| {
+        let va = parse_version_for_sort(a);
+        let vb = parse_version_for_sort(b);
+        match (va, vb) {
+            (Some(va), Some(vb)) => vb.cmp(&va),
+            _ => natural_sort_cmp(b, a),
+        }
+    });
+    versions.dedup();
+    versions
 }
 
 fn natural_sort_cmp(left: &str, right: &str) -> Ordering {
@@ -691,6 +755,44 @@ async fn fetch_release_by_tag(tag: &str) -> Result<GithubRelease, String> {
         .map_err(|e| e.to_string())
 }
 
+async fn fetch_release_for_version(version: &str) -> Result<GithubRelease, String> {
+    let normalized = normalize_version(version);
+    let tags = [normalized.clone(), format!("v{normalized}")];
+    let mut errors = Vec::new();
+
+    for tag in tags {
+        match fetch_release_by_tag(&tag).await {
+            Ok(release) => return Ok(release),
+            Err(error) => errors.push(error),
+        }
+    }
+
+    Err(format!(
+        "Не удалось найти релиз zapret {version}: {}",
+        errors.join("; ")
+    ))
+}
+
+async fn download_release_archive(release: &GithubRelease) -> Result<Vec<u8>, String> {
+    let asset = pick_zip_asset(release)?;
+    let response = github_client()?
+        .get(&asset.browser_download_url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Не удалось скачать архив: HTTP {}",
+            response.status()
+        ));
+    }
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| e.to_string())
+}
+
 fn open_in_browser(target: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -847,6 +949,33 @@ fn extract_zip_to_dir(zip_bytes: &[u8], destination: &Path) -> Result<(), String
         }
     }
 
+    Ok(())
+}
+
+fn validate_version_directory_name(version: &str) -> Result<(), String> {
+    if version.is_empty()
+        || version == "."
+        || version == ".."
+        || !version
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+    {
+        return Err(format!("Некорректное имя версии: {version}"));
+    }
+    Ok(())
+}
+
+fn remove_installed_version(version: &str) -> Result<(), String> {
+    validate_version_directory_name(version)?;
+    let version_dir = zapret_root()?.join(version);
+    if version_dir.exists() {
+        fs::remove_dir_all(&version_dir).map_err(|error| {
+            format!(
+                "Не удалось удалить папку версии {}: {error}",
+                version_dir.display()
+            )
+        })?;
+    }
     Ok(())
 }
 
@@ -1159,7 +1288,12 @@ async fn build_ui_state() -> Result<UiState, String> {
     let (config, strategies) = mutate_config(|config| {
         let supported_versions = installed_versions
             .iter()
-            .filter(|version| !config.bad_versions.iter().any(|bad| bad == *version))
+            .filter(|version| {
+                !config
+                    .bad_versions
+                    .iter()
+                    .any(|bad| bad.zapret_version == **version)
+            })
             .cloned()
             .collect::<Vec<_>>();
 
@@ -1210,6 +1344,7 @@ async fn build_ui_state() -> Result<UiState, String> {
 
     Ok(UiState {
         installed_versions,
+        repairable_bad_versions: repairable_bad_versions(&config),
         bad_versions: config.bad_versions,
         active_version: config.active_version,
         latest_version,
@@ -1314,13 +1449,103 @@ async fn install_latest(app: AppHandle) -> Result<InstallLatestResult, String> {
     })
 }
 
+async fn reinstall_bad_version(version: &str) -> Result<(), String> {
+    validate_version_directory_name(version)?;
+    let release = fetch_release_for_version(version).await?;
+    let archive = download_release_archive(&release).await?;
+    let version_dir = zapret_root()?.join(version);
+
+    remove_installed_version(version)?;
+    extract_zip_to_dir(&archive, &version_dir)?;
+    flatten_single_root_directory(&version_dir)?;
+    patch_extracted_strategy_files(&version_dir)?;
+
+    if let Err(errors) = validate_prepared_version(version, &version_dir) {
+        return Err(errors.join("; "));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn repair_bad_versions(
+    app: AppHandle,
+    request: RepairBadVersionsRequest,
+) -> Result<Vec<RepairBadVersionResult>, String> {
+    let candidates = read_config(|config| Ok(repairable_bad_versions(config)))?;
+    let selected = request
+        .selected_versions
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let mut results = Vec::with_capacity(candidates.len());
+
+    for version in candidates {
+        if selected.contains(&version) {
+            match reinstall_bad_version(&version).await {
+                Ok(()) => {
+                    set_version_compatibility(&version, true)?;
+                    results.push(RepairBadVersionResult {
+                        version,
+                        status: "repaired".to_string(),
+                        message: None,
+                    });
+                }
+                Err(error) => {
+                    set_version_compatibility(&version, false)?;
+                    debug_log_error(
+                        "repair_bad_versions.reinstall_bad_version",
+                        &format!("Version {version}: {error}"),
+                    );
+                    results.push(RepairBadVersionResult {
+                        version,
+                        status: "error".to_string(),
+                        message: Some(error),
+                    });
+                }
+            }
+        } else {
+            match remove_installed_version(&version) {
+                Ok(()) => {
+                    set_version_compatibility(&version, true)?;
+                    results.push(RepairBadVersionResult {
+                        version,
+                        status: "deleted".to_string(),
+                        message: None,
+                    });
+                }
+                Err(error) => {
+                    set_version_compatibility(&version, false)?;
+                    debug_log_error(
+                        "repair_bad_versions.remove_installed_version",
+                        &format!("Version {version}: {error}"),
+                    );
+                    results.push(RepairBadVersionResult {
+                        version,
+                        status: "error".to_string(),
+                        message: Some(error),
+                    });
+                }
+            }
+        }
+    }
+
+    refresh_tray_menu(&app);
+    emit_bypass_state_changed(&app);
+    Ok(results)
+}
+
 #[tauri::command]
 async fn switch_active_version(app: AppHandle, version: String) -> Result<(), String> {
     let installed = list_installed_versions()?;
     if !installed.iter().any(|v| v == &version) {
         return Err(format!("Version is not installed: {version}"));
     }
-    if read_config(|config| Ok(config.bad_versions.iter().any(|bad| bad == &version)))? {
+    if read_config(|config| {
+        Ok(config
+            .bad_versions
+            .iter()
+            .any(|bad| bad.zapret_version == version))
+    })? {
         return Err(format!("Version is not supported: {version}"));
     }
 
@@ -2025,6 +2250,7 @@ pub fn run() {
             load_app_state,
             refresh_release_info,
             install_latest,
+            repair_bad_versions,
             switch_active_version,
             select_strategy,
             start_bypass,
@@ -2051,7 +2277,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        flatten_single_root_directory, validate_prepared_version, zapret_root, AppConfig,
+        flatten_single_root_directory, is_older_app_version, validate_prepared_version,
+        zapret_root, AppConfig,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -2125,18 +2352,37 @@ mod tests {
     }
 
     #[test]
-    fn bad_versions_is_backward_compatible_and_uses_camel_case() {
+    fn bad_versions_uses_current_object_format() {
         let config: AppConfig = serde_json::from_str(
             r#"{
                 "activeVersion": "1.0.0",
-                "selectedStrategy": "general.bat"
+                "selectedStrategy": "general.bat",
+                "badVersions": [{
+                    "zapretVersion": "1.9.9c",
+                    "zprtAppVersion": "1.3.3"
+                }]
             }"#,
         )
-        .expect("deserialize legacy config");
-        assert!(config.bad_versions.is_empty());
+        .expect("deserialize config");
+        assert_eq!(config.bad_versions.len(), 1);
+        assert_eq!(config.bad_versions[0].zapret_version, "1.9.9c");
+        assert_eq!(config.bad_versions[0].zprt_app_version, "1.3.3");
 
         let serialized = serde_json::to_value(config).expect("serialize config");
-        assert_eq!(serialized["badVersions"], serde_json::json!([]));
+        assert_eq!(
+            serialized["badVersions"],
+            serde_json::json!([{
+                "zapretVersion": "1.9.9c",
+                "zprtAppVersion": "1.3.3"
+            }])
+        );
+    }
+
+    #[test]
+    fn compares_release_and_prerelease_app_versions() {
+        assert!(is_older_app_version("1.3.3", "1.4.0"));
+        assert!(is_older_app_version("1.4.0-rc.1", "1.4.0"));
+        assert!(!is_older_app_version("1.4.0", "1.4.0-rc.1"));
     }
 
     #[test]

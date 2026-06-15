@@ -6193,7 +6193,7 @@ dependencies = [
 
 [[package]]
 name = "zprt-app"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "chrono",
  "notify-rust",

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -7,6 +8,7 @@ import {
     ArrowSquareOutIcon,
     CaretUpDownIcon,
     MinusIcon,
+    SpinnerGapIcon,
     XIcon,
 } from "@phosphor-icons/react";
 import { Toaster, toast } from "sonner";
@@ -14,6 +16,7 @@ import { useTranslation } from "react-i18next";
 import coolImage from "./img/cool.jpg";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
     Command,
     CommandEmpty,
@@ -52,7 +55,8 @@ import { Textarea } from "@/components/ui/textarea";
 
 type AppState = {
     installedVersions: string[];
-    badVersions: string[];
+    badVersions: BadVersion[];
+    repairableBadVersions: string[];
     activeVersion: string | null;
     latestVersion: string | null;
     latestReleaseUrl: string | null;
@@ -68,11 +72,24 @@ type AppState = {
     ipsetExcludeUser: string;
 };
 
+type BadVersion = {
+    zapretVersion: string;
+    zprtAppVersion: string;
+};
+
 type InstallLatestResult = {
     installed: boolean;
     unsupported: boolean;
     version: string;
 };
+
+type RepairBadVersionResult = {
+    version: string;
+    status: "repaired" | "error" | "deleted";
+    message: string | null;
+};
+
+type RepairDialogPhase = "closed" | "selection" | "working" | "results";
 
 type Tab = "control" | "lists" | "versions";
 type ToastType = "success" | "error" | "info" | "warning";
@@ -81,6 +98,7 @@ type UserListKey = "general" | "excludeDomains" | "excludeIps";
 const emptyState: AppState = {
     installedVersions: [],
     badVersions: [],
+    repairableBadVersions: [],
     activeVersion: null,
     latestVersion: null,
     latestReleaseUrl: null,
@@ -179,6 +197,7 @@ function UpdateToastView() {
 function MainApp() {
     const { t } = useTranslation();
     const [state, setState] = useState<AppState>(emptyState);
+    const [appVersion, setAppVersion] = useState<string | null>(null);
     const [tab, setTab] = useState<Tab>("control");
     const [isInitialStateLoaded, setIsInitialStateLoaded] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -188,6 +207,17 @@ function MainApp() {
     const [unsupportedVersion, setUnsupportedVersion] = useState<string | null>(
         null,
     );
+    const [repairDialogPhase, setRepairDialogPhase] =
+        useState<RepairDialogPhase>("closed");
+    const [repairCandidates, setRepairCandidates] = useState<string[]>([]);
+    const [selectedRepairVersions, setSelectedRepairVersions] = useState<
+        Set<string>
+    >(new Set());
+    const [repairResults, setRepairResults] = useState<
+        RepairBadVersionResult[]
+    >([]);
+    const [versionToActivateAfterRepair, setVersionToActivateAfterRepair] =
+        useState<string | null>(null);
     const [titleClickCount, setTitleClickCount] = useState(0);
     const [selectedListKey, setSelectedListKey] =
         useState<UserListKey>("general");
@@ -198,15 +228,20 @@ function MainApp() {
     });
 
     const startupUpdateToastShown = useRef(false);
+    const repairPromptInitialized = useRef(false);
     const easterEggTimeoutRef = useRef<number | null>(null);
+    const tabsRegionRef = useRef<HTMLDivElement | null>(null);
 
     const hasInstalledVersions = state.installedVersions.length > 0;
     const hasSupportedVersions = state.installedVersions.some(
-        (version) => !state.badVersions.includes(version),
+        (version) =>
+            !state.badVersions.some((bad) => bad.zapretVersion === version),
     );
     const latestVersionUnsupported =
         state.latestVersion !== null &&
-        state.badVersions.includes(state.latestVersion);
+        state.badVersions.some(
+            (bad) => bad.zapretVersion === state.latestVersion,
+        );
     const selectedListValue = getListValue(state, selectedListKey);
     const selectedListDirty = selectedListValue !== savedLists[selectedListKey];
 
@@ -231,7 +266,7 @@ function MainApp() {
         toast(text);
     }
 
-    async function load() {
+    async function load(): Promise<AppState> {
         const next = await invoke<AppState>("load_app_state");
         setState(next);
         setSavedLists({
@@ -240,6 +275,7 @@ function MainApp() {
             excludeIps: next.ipsetExcludeUser,
         });
         setIsInitialStateLoaded(true);
+        return next;
     }
 
     function setListValue(key: UserListKey, value: string) {
@@ -333,6 +369,107 @@ function MainApp() {
             showToast(String(error), "error"),
         );
     }
+
+    function toggleRepairVersion(version: string, checked: boolean) {
+        setSelectedRepairVersions((current) => {
+            const next = new Set(current);
+            if (checked) {
+                next.add(version);
+            } else {
+                next.delete(version);
+            }
+            return next;
+        });
+    }
+
+    async function repairBadVersionsAction() {
+        setRepairDialogPhase("working");
+        setVersionToActivateAfterRepair(null);
+        try {
+            const results = await invoke<RepairBadVersionResult[]>(
+                "repair_bad_versions",
+                {
+                    request: {
+                        selectedVersions: Array.from(selectedRepairVersions),
+                    },
+                },
+            );
+            setRepairResults(results);
+            const nextState = await load();
+            const repairedVersions = results
+                .filter((result) => result.status === "repaired")
+                .map((result) => result.version);
+            const hasErrors = results.some(
+                (result) => result.status === "error",
+            );
+            const newestRepairedVersion = repairedVersions[0] ?? null;
+            if (
+                !hasErrors &&
+                newestRepairedVersion !== null &&
+                nextState.latestVersion !== null &&
+                newestRepairedVersion.replace(/^v/i, "") ===
+                    nextState.latestVersion.replace(/^v/i, "")
+            ) {
+                setVersionToActivateAfterRepair(newestRepairedVersion);
+            }
+        } catch (error) {
+            setRepairResults(
+                repairCandidates.map((version) => ({
+                    version,
+                    status: "error",
+                    message: String(error),
+                })),
+            );
+        } finally {
+            setRepairDialogPhase("results");
+        }
+    }
+
+    async function closeRepairResults() {
+        const version = versionToActivateAfterRepair;
+        setRepairDialogPhase("closed");
+        setVersionToActivateAfterRepair(null);
+        if (!version) {
+            return;
+        }
+        try {
+            await invoke("switch_active_version", { version });
+            await load();
+        } catch (error) {
+            showToast(String(error), "error");
+        }
+    }
+
+    useEffect(() => {
+        getVersion().then(setAppVersion).catch(() => {});
+    }, []);
+
+    useEffect(() => {
+        const tabsRegion = tabsRegionRef.current;
+        if (!tabsRegion) {
+            return;
+        }
+
+        if (repairDialogPhase !== "closed") {
+            tabsRegion.setAttribute("inert", "");
+        } else {
+            tabsRegion.removeAttribute("inert");
+        }
+    }, [repairDialogPhase]);
+
+    useEffect(() => {
+        if (
+            !repairPromptInitialized.current &&
+            state.repairableBadVersions.length > 0
+        ) {
+            repairPromptInitialized.current = true;
+            setRepairCandidates(state.repairableBadVersions);
+            setSelectedRepairVersions(
+                new Set([state.repairableBadVersions[0]]),
+            );
+            setRepairDialogPhase("selection");
+        }
+    }, [state.repairableBadVersions]);
 
     useEffect(() => {
         load().catch((error) => showToast(String(error), "error"));
@@ -467,6 +604,159 @@ function MainApp() {
                 offset={48}
                 closeButton
             />
+            {repairDialogPhase !== "closed" && (
+                <div
+                    aria-hidden="true"
+                    className="fixed inset-x-0 bottom-0 top-10 z-40 bg-black/60"
+                />
+            )}
+            <Dialog
+                modal={false}
+                open={repairDialogPhase !== "closed"}
+                onOpenChange={(open) => {
+                    if (!open && repairDialogPhase === "results") {
+                        void closeRepairResults();
+                    }
+                }}
+            >
+                <DialogContent
+                    showCloseButton={repairDialogPhase === "results"}
+                    overlayClassName="top-10 pointer-events-auto bg-transparent"
+                    className="top-[calc(50%+1.25rem)]"
+                    onEscapeKeyDown={(event) => {
+                        if (repairDialogPhase !== "results") {
+                            event.preventDefault();
+                        }
+                    }}
+                    onPointerDownOutside={(event) => {
+                        if (repairDialogPhase !== "results") {
+                            event.preventDefault();
+                        }
+                    }}
+                >
+                    {repairDialogPhase === "selection" && (
+                        <>
+                            <DialogHeader>
+                                <DialogTitle>
+                                    {t("repairVersionsDialog.title")}
+                                </DialogTitle>
+                                <DialogDescription>
+                                    {t("repairVersionsDialog.description")}
+                                </DialogDescription>
+                            </DialogHeader>
+                            <ScrollArea className="h-44">
+                                <div className="flex flex-col gap-3 pr-3">
+                                    {repairCandidates.map((version) => (
+                                        <label
+                                            key={version}
+                                            className="flex cursor-pointer items-center gap-3 rounded-lg border border-border px-3 py-2"
+                                        >
+                                            <Checkbox
+                                                checked={selectedRepairVersions.has(
+                                                    version,
+                                                )}
+                                                onCheckedChange={(checked) =>
+                                                    toggleRepairVersion(
+                                                        version,
+                                                        checked === true,
+                                                    )
+                                                }
+                                            />
+                                            <span className="font-medium">
+                                                zapret {version}
+                                            </span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </ScrollArea>
+                            <p className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-400">
+                                {t("repairVersionsDialog.deleteHint")}
+                            </p>
+                            <DialogFooter>
+                                <Button
+                                    onClick={() =>
+                                        void repairBadVersionsAction()
+                                    }
+                                >
+                                    {t("repairVersionsDialog.confirm")}
+                                </Button>
+                            </DialogFooter>
+                        </>
+                    )}
+
+                    {repairDialogPhase === "working" && (
+                        <div className="flex flex-col items-center gap-4 py-6 text-center">
+                            <SpinnerGapIcon className="size-8 animate-spin text-primary" />
+                            <DialogHeader>
+                                <DialogTitle>
+                                    {t("repairVersionsDialog.workingTitle")}
+                                </DialogTitle>
+                                <DialogDescription>
+                                    {t(
+                                        "repairVersionsDialog.workingDescription",
+                                    )}
+                                </DialogDescription>
+                            </DialogHeader>
+                        </div>
+                    )}
+
+                    {repairDialogPhase === "results" && (
+                        <>
+                            <DialogHeader>
+                                <DialogTitle>
+                                    {t("repairVersionsDialog.resultsTitle")}
+                                </DialogTitle>
+                                <DialogDescription>
+                                    {t(
+                                        "repairVersionsDialog.resultsDescription",
+                                    )}
+                                </DialogDescription>
+                            </DialogHeader>
+                            <ScrollArea className="h-44">
+                                <div className="flex flex-col gap-2 pr-3">
+                                    {repairResults.map((result) => (
+                                        <div
+                                            key={result.version}
+                                            className="rounded-lg border border-border px-3 py-2"
+                                        >
+                                            <div className="flex items-center justify-between gap-3">
+                                                <span className="font-medium">
+                                                    zapret {result.version}
+                                                </span>
+                                                <span
+                                                    className={
+                                                        result.status ===
+                                                        "repaired"
+                                                            ? "text-primary"
+                                                            : result.status ===
+                                                                "error"
+                                                              ? "text-destructive"
+                                                              : "text-muted-foreground"
+                                                    }
+                                                >
+                                                    {t(
+                                                        `repairVersionsDialog.status.${result.status}`,
+                                                    )}
+                                                </span>
+                                            </div>
+                                            {result.message && (
+                                                <p className="mt-1 text-xs text-muted-foreground">
+                                                    {result.message}
+                                                </p>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </ScrollArea>
+                            <DialogFooter>
+                                <Button onClick={() => void closeRepairResults()}>
+                                    {t("repairVersionsDialog.close")}
+                                </Button>
+                            </DialogFooter>
+                        </>
+                    )}
+                </DialogContent>
+            </Dialog>
             <Dialog
                 open={unsupportedVersion !== null}
                 onOpenChange={(open) => {
@@ -541,6 +831,11 @@ function MainApp() {
                         >
                             {t("app.windowName")}
                         </button>
+                        {appVersion && (
+                            <span className="relative top-0.5 ml-2 select-none text-xs leading-none text-muted-foreground">
+                                v{appVersion}
+                            </span>
+                        )}
                         <div className="ml-3 select-none rounded-md border border-border bg-card px-2 py-0.5 text-xs text-muted-foreground">
                             {t("status.label")}:{" "}
                             <span
@@ -576,11 +871,19 @@ function MainApp() {
                     </div>
                 </header>
 
-                <Tabs
-                    value={tab}
-                    onValueChange={(value) => setTab(value as Tab)}
-                    className="flex min-h-0 flex-1 flex-col"
+                <div
+                    ref={tabsRegionRef}
+                    className={
+                        repairDialogPhase !== "closed"
+                            ? "pointer-events-none flex min-h-0 flex-1 flex-col"
+                            : "flex min-h-0 flex-1 flex-col"
+                    }
                 >
+                    <Tabs
+                        value={tab}
+                        onValueChange={(value) => setTab(value as Tab)}
+                        className="flex min-h-0 flex-1 flex-col"
+                    >
                     <TabsList
                         variant="line"
                         className="mx-4 my-3 w-auto shrink-0 justify-start"
@@ -1096,8 +1399,10 @@ function MainApp() {
                                                     {state.installedVersions.map(
                                                         (version) => {
                                                             const unsupported =
-                                                                state.badVersions.includes(
-                                                                    version,
+                                                                state.badVersions.some(
+                                                                    (bad) =>
+                                                                        bad.zapretVersion ===
+                                                                        version,
                                                                 );
                                                             return (
                                                                 <SelectItem
@@ -1163,7 +1468,8 @@ function MainApp() {
                             </ScrollArea>
                         </TabsContent>
                     </div>
-                </Tabs>
+                    </Tabs>
+                </div>
             </div>
         </main>
     );
