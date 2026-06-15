@@ -30,8 +30,18 @@ import {
 } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+    Dialog,
+    DialogClose,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import {
     Select,
     SelectContent,
+    SelectGroup,
     SelectItem,
     SelectTrigger,
     SelectValue,
@@ -42,6 +52,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 type AppState = {
     installedVersions: string[];
+    badVersions: string[];
     activeVersion: string | null;
     latestVersion: string | null;
     latestReleaseUrl: string | null;
@@ -57,12 +68,19 @@ type AppState = {
     ipsetExcludeUser: string;
 };
 
+type InstallLatestResult = {
+    installed: boolean;
+    unsupported: boolean;
+    version: string;
+};
+
 type Tab = "control" | "lists" | "versions";
 type ToastType = "success" | "error" | "info" | "warning";
 type UserListKey = "general" | "excludeDomains" | "excludeIps";
 
 const emptyState: AppState = {
     installedVersions: [],
+    badVersions: [],
     activeVersion: null,
     latestVersion: null,
     latestReleaseUrl: null,
@@ -167,6 +185,9 @@ function MainApp() {
     const [savingLists, setSavingLists] = useState(false);
     const [strategyPickerOpen, setStrategyPickerOpen] = useState(false);
     const [showEasterEgg, setShowEasterEgg] = useState(false);
+    const [unsupportedVersion, setUnsupportedVersion] = useState<string | null>(
+        null,
+    );
     const [titleClickCount, setTitleClickCount] = useState(0);
     const [selectedListKey, setSelectedListKey] =
         useState<UserListKey>("general");
@@ -180,6 +201,12 @@ function MainApp() {
     const easterEggTimeoutRef = useRef<number | null>(null);
 
     const hasInstalledVersions = state.installedVersions.length > 0;
+    const hasSupportedVersions = state.installedVersions.some(
+        (version) => !state.badVersions.includes(version),
+    );
+    const latestVersionUnsupported =
+        state.latestVersion !== null &&
+        state.badVersions.includes(state.latestVersion);
     const selectedListValue = getListValue(state, selectedListKey);
     const selectedListDirty = selectedListValue !== savedLists[selectedListKey];
 
@@ -279,6 +306,34 @@ function MainApp() {
         }
     }
 
+    async function installLatestAction() {
+        setBusy(true);
+        try {
+            const result = await invoke<InstallLatestResult>("install_latest");
+            await load();
+            if (result.unsupported) {
+                setUnsupportedVersion(result.version);
+                return;
+            }
+            showToast(
+                hasInstalledVersions
+                    ? t("toasts.latestVersionInstalled")
+                    : t("toasts.versionInstalled"),
+                "success",
+            );
+        } catch (error) {
+            showToast(String(error), "error");
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    function openProjectPage(url: string) {
+        invoke("open_external_url", { url }).catch((error) =>
+            showToast(String(error), "error"),
+        );
+    }
+
     useEffect(() => {
         load().catch((error) => showToast(String(error), "error"));
 
@@ -331,12 +386,12 @@ function MainApp() {
     useEffect(() => {
         if (
             isInitialStateLoaded &&
-            !hasInstalledVersions &&
+            !hasSupportedVersions &&
             tab !== "versions"
         ) {
             setTab("versions");
         }
-    }, [hasInstalledVersions, isInitialStateLoaded, tab]);
+    }, [hasSupportedVersions, isInitialStateLoaded, tab]);
 
     useEffect(() => {
         return () => {
@@ -412,6 +467,54 @@ function MainApp() {
                 offset={48}
                 closeButton
             />
+            <Dialog
+                open={unsupportedVersion !== null}
+                onOpenChange={(open) => {
+                    if (!open) {
+                        setUnsupportedVersion(null);
+                    }
+                }}
+            >
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>
+                            {t("unsupportedVersionDialog.title")}
+                        </DialogTitle>
+                        <DialogDescription>
+                            {t("unsupportedVersionDialog.description", {
+                                version: unsupportedVersion,
+                            })}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter className="sm:flex-col">
+                        <Button
+                            variant="outline"
+                            onClick={() =>
+                                openProjectPage(
+                                    "https://github.com/amati4s/zapret-app/releases",
+                                )
+                            }
+                        >
+                            <ArrowSquareOutIcon data-icon="inline-start" />
+                            {t("unsupportedVersionDialog.openReleases")}
+                        </Button>
+                        <Button
+                            variant="outline"
+                            onClick={() =>
+                                openProjectPage(
+                                    "https://github.com/amati4s/zapret-app/issues/new",
+                                )
+                            }
+                        >
+                            <ArrowSquareOutIcon data-icon="inline-start" />
+                            {t("unsupportedVersionDialog.reportProblem")}
+                        </Button>
+                        <DialogClose asChild>
+                            <Button>{t("unsupportedVersionDialog.close")}</Button>
+                        </DialogClose>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
             {showEasterEgg && (
                 <div className="pointer-events-none fixed inset-0 z-[5000] bg-black">
                     <img
@@ -485,7 +588,7 @@ function MainApp() {
                         <TabsTrigger
                             value="control"
                             disabled={
-                                busy || savingLists || !hasInstalledVersions
+                                busy || savingLists || !hasSupportedVersions
                             }
                         >
                             {t("tabs.control")}
@@ -493,7 +596,7 @@ function MainApp() {
                         <TabsTrigger
                             value="lists"
                             disabled={
-                                busy || savingLists || !hasInstalledVersions
+                                busy || savingLists || !hasSupportedVersions
                             }
                         >
                             {t("tabs.lists")}
@@ -931,25 +1034,12 @@ function MainApp() {
 
                                     <div className="flex flex-wrap gap-2">
                                         {(state.updateAvailable ||
+                                            latestVersionUnsupported ||
                                             !hasInstalledVersions) && (
                                             <Button
                                                 disabled={busy}
                                                 onClick={() =>
-                                                    runAction(
-                                                        () =>
-                                                            invoke(
-                                                                "install_latest",
-                                                            ).then(
-                                                                () => undefined,
-                                                            ),
-                                                        hasInstalledVersions
-                                                            ? t(
-                                                                  "toasts.latestVersionInstalled",
-                                                              )
-                                                            : t(
-                                                                  "toasts.versionInstalled",
-                                                              ),
-                                                    )
+                                                    void installLatestAction()
                                                 }
                                             >
                                                 {hasInstalledVersions
@@ -1002,16 +1092,38 @@ function MainApp() {
                                                 />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {state.installedVersions.map(
-                                                    (version) => (
-                                                        <SelectItem
-                                                            key={version}
-                                                            value={version}
-                                                        >
-                                                            {version}
-                                                        </SelectItem>
-                                                    ),
-                                                )}
+                                                <SelectGroup>
+                                                    {state.installedVersions.map(
+                                                        (version) => {
+                                                            const unsupported =
+                                                                state.badVersions.includes(
+                                                                    version,
+                                                                );
+                                                            return (
+                                                                <SelectItem
+                                                                    key={
+                                                                        version
+                                                                    }
+                                                                    value={
+                                                                        version
+                                                                    }
+                                                                    disabled={
+                                                                        unsupported
+                                                                    }
+                                                                >
+                                                                    {unsupported
+                                                                        ? t(
+                                                                              "versions.unsupportedVersion",
+                                                                              {
+                                                                                  version,
+                                                                              },
+                                                                          )
+                                                                        : version}
+                                                                </SelectItem>
+                                                            );
+                                                        },
+                                                    )}
+                                                </SelectGroup>
                                             </SelectContent>
                                         </Select>
                                     </div>

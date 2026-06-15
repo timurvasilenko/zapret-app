@@ -75,6 +75,8 @@ fn config_lock() -> &'static Mutex<()> {
 struct AppConfig {
     active_version: Option<String>,
     selected_strategy: Option<String>,
+    #[serde(default)]
+    bad_versions: Vec<String>,
     #[serde(default = "default_true")]
     notify_update_available: bool,
     #[serde(default)]
@@ -88,6 +90,7 @@ impl Default for AppConfig {
         Self {
             active_version: None,
             selected_strategy: None,
+            bad_versions: Vec::new(),
             notify_update_available: true,
             last_update_notification: None,
             debug_mode: false,
@@ -149,6 +152,7 @@ fn append_log_line(context: &str, error: &str) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 struct UiState {
     installed_versions: Vec<String>,
+    bad_versions: Vec<String>,
     active_version: Option<String>,
     latest_version: Option<String>,
     latest_release_url: Option<String>,
@@ -162,6 +166,14 @@ struct UiState {
     list_general_user: String,
     list_exclude_user: String,
     ipset_exclude_user: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallLatestResult {
+    installed: bool,
+    unsupported: bool,
+    version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,6 +363,71 @@ fn list_strategies_for_version(version: &str) -> Result<Vec<String>, String> {
 
     strategies.sort_by(|a, b| natural_sort_cmp(a, b));
     Ok(strategies)
+}
+
+fn validate_prepared_version(version: &str, version_dir: &Path) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+
+    if !version_dir.is_dir() {
+        errors.push("Каталог версии не найден".to_string());
+        return Err(errors);
+    }
+
+    match fs::read_dir(version_dir) {
+        Ok(mut entries) => {
+            if entries.next().is_none() {
+                errors.push("Каталог версии пуст".to_string());
+            }
+        }
+        Err(error) => {
+            errors.push(format!("Не удалось прочитать каталог версии: {error}"));
+            return Err(errors);
+        }
+    }
+
+    let has_strategy_file = fs::read_dir(version_dir)
+        .map(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                path.is_file() && name.starts_with("general") && name.ends_with(".bat")
+            })
+        })
+        .unwrap_or(false);
+    if !has_strategy_file {
+        errors.push("В корне версии не найден ни один файл general*.bat".to_string());
+    }
+
+    if !version_dir.join("service.bat").is_file() {
+        errors.push("В корне версии не найден файл service.bat".to_string());
+    }
+
+    match list_strategies_for_version(version) {
+        Ok(strategies) if strategies.is_empty() => {
+            errors.push("Приложение не смогло получить список стратегий".to_string());
+        }
+        Err(error) => {
+            errors.push(format!("Не удалось получить список стратегий: {error}"));
+        }
+        Ok(_) => {}
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn set_version_compatibility(version: &str, supported: bool) -> Result<(), String> {
+    mutate_config(|config| {
+        if supported {
+            config.bad_versions.retain(|item| item != version);
+        } else if !config.bad_versions.iter().any(|item| item == version) {
+            config.bad_versions.push(version.to_string());
+        }
+        Ok(())
+    })
 }
 
 fn natural_sort_cmp(left: &str, right: &str) -> Ordering {
@@ -773,6 +850,57 @@ fn extract_zip_to_dir(zip_bytes: &[u8], destination: &Path) -> Result<(), String
     Ok(())
 }
 
+fn flatten_single_root_directory(destination: &Path) -> Result<bool, String> {
+    let mut entries = fs::read_dir(destination)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    if entries.len() != 1 {
+        return Ok(false);
+    }
+
+    let root_dir = entries
+        .pop()
+        .map(|entry| entry.path())
+        .ok_or_else(|| "Failed to inspect extracted archive".to_string())?;
+    if !root_dir.is_dir() {
+        return Ok(false);
+    }
+
+    let nested_entries = fs::read_dir(&root_dir)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    for entry in nested_entries {
+        let source = entry.path();
+        let target = destination.join(entry.file_name());
+        if target.exists() {
+            return Err(format!(
+                "Cannot flatten archive folder because target already exists: {}",
+                target.display()
+            ));
+        }
+        fs::rename(&source, &target).map_err(|e| {
+            format!(
+                "Failed to move extracted item {} to {}: {e}",
+                source.display(),
+                target.display()
+            )
+        })?;
+    }
+
+    fs::remove_dir(&root_dir).map_err(|e| {
+        format!(
+            "Failed to remove empty archive folder {}: {e}",
+            root_dir.display()
+        )
+    })?;
+
+    Ok(true)
+}
+
 fn trim_ascii_whitespace_bytes(line: &[u8]) -> &[u8] {
     let mut start = 0usize;
     let mut end = line.len();
@@ -1029,13 +1157,19 @@ fn stop_strategy_impl() -> Result<(), String> {
 async fn build_ui_state() -> Result<UiState, String> {
     let installed_versions = list_installed_versions()?;
     let (config, strategies) = mutate_config(|config| {
-        if config.active_version.is_none() && !installed_versions.is_empty() {
-            config.active_version = installed_versions.first().cloned();
+        let supported_versions = installed_versions
+            .iter()
+            .filter(|version| !config.bad_versions.iter().any(|bad| bad == *version))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if config.active_version.is_none() && !supported_versions.is_empty() {
+            config.active_version = supported_versions.first().cloned();
         }
 
         if let Some(active) = &config.active_version {
-            if !installed_versions.iter().any(|v| v == active) {
-                config.active_version = installed_versions.first().cloned();
+            if !supported_versions.iter().any(|v| v == active) {
+                config.active_version = supported_versions.first().cloned();
                 config.selected_strategy = None;
             }
         }
@@ -1076,6 +1210,7 @@ async fn build_ui_state() -> Result<UiState, String> {
 
     Ok(UiState {
         installed_versions,
+        bad_versions: config.bad_versions,
         active_version: config.active_version,
         latest_version,
         latest_release_url,
@@ -1103,7 +1238,7 @@ async fn refresh_release_info() -> Result<UiState, String> {
 }
 
 #[tauri::command]
-async fn install_latest(app: AppHandle) -> Result<(), String> {
+async fn install_latest(app: AppHandle) -> Result<InstallLatestResult, String> {
     let was_running = is_winws_running();
     let previous_strategy = read_config(|config| Ok(config.selected_strategy.clone()))?;
 
@@ -1123,8 +1258,23 @@ async fn install_latest(app: AppHandle) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
 
         extract_zip_to_dir(&bytes, &version_dir)?;
+        flatten_single_root_directory(&version_dir)?;
         patch_extracted_strategy_files(&version_dir)?;
     }
+
+    if let Err(errors) = validate_prepared_version(&normalized_version, &version_dir) {
+        set_version_compatibility(&normalized_version, false)?;
+        debug_log_error(
+            "install_latest.validate_prepared_version",
+            &format!("Version {normalized_version}: {}", errors.join("; ")),
+        );
+        return Ok(InstallLatestResult {
+            installed: false,
+            unsupported: true,
+            version: normalized_version,
+        });
+    }
+    set_version_compatibility(&normalized_version, true)?;
 
     if was_running {
         stop_strategy_impl()?;
@@ -1157,7 +1307,11 @@ async fn install_latest(app: AppHandle) -> Result<(), String> {
 
     refresh_tray_menu(&app);
     emit_bypass_state_changed(&app);
-    Ok(())
+    Ok(InstallLatestResult {
+        installed: true,
+        unsupported: false,
+        version: normalized_version,
+    })
 }
 
 #[tauri::command]
@@ -1165,6 +1319,9 @@ async fn switch_active_version(app: AppHandle, version: String) -> Result<(), St
     let installed = list_installed_versions()?;
     if !installed.iter().any(|v| v == &version) {
         return Err(format!("Version is not installed: {version}"));
+    }
+    if read_config(|config| Ok(config.bad_versions.iter().any(|bad| bad == &version)))? {
+        return Err(format!("Version is not supported: {version}"));
     }
 
     mutate_config(|config| {
@@ -1889,6 +2046,120 @@ pub fn run() {
             debug_log_error("run.tauri_builder.run", &err.to_string());
             panic!("error while running tauri application: {err}");
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        flatten_single_root_directory, validate_prepared_version, zapret_root, AppConfig,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "zprt-app-{name}-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("create test directory");
+        path
+    }
+
+    fn test_version_dir(name: &str) -> (String, PathBuf) {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let version = format!("test-{name}-{}-{unique}", std::process::id());
+        let path = zapret_root().expect("resolve zapret root").join(&version);
+        fs::create_dir_all(&path).expect("create test version directory");
+        (version, path)
+    }
+
+    #[test]
+    fn flattens_single_root_directory() {
+        let destination = test_dir("flatten");
+        let root = destination.join("archive-root");
+        fs::create_dir_all(root.join("nested")).expect("create nested directory");
+        fs::write(root.join("general.bat"), b"test").expect("write file");
+        fs::write(root.join("nested").join("data.txt"), b"data").expect("write nested file");
+
+        assert!(flatten_single_root_directory(&destination).expect("flatten directory"));
+        assert!(destination.join("general.bat").is_file());
+        assert!(destination.join("nested").join("data.txt").is_file());
+        assert!(!root.exists());
+
+        fs::remove_dir_all(destination).expect("remove test directory");
+    }
+
+    #[test]
+    fn keeps_multiple_root_entries_unchanged() {
+        let destination = test_dir("multiple");
+        let root = destination.join("archive-root");
+        fs::create_dir_all(&root).expect("create root directory");
+        fs::write(root.join("general.bat"), b"test").expect("write nested file");
+        fs::write(destination.join("readme.txt"), b"readme").expect("write root file");
+
+        assert!(!flatten_single_root_directory(&destination).expect("inspect directory"));
+        assert!(root.join("general.bat").is_file());
+        assert!(destination.join("readme.txt").is_file());
+
+        fs::remove_dir_all(destination).expect("remove test directory");
+    }
+
+    #[test]
+    fn keeps_single_root_file_unchanged() {
+        let destination = test_dir("single-file");
+        let file = destination.join("archive.zip.txt");
+        fs::write(&file, b"test").expect("write root file");
+
+        assert!(!flatten_single_root_directory(&destination).expect("inspect directory"));
+        assert!(file.is_file());
+
+        fs::remove_dir_all(destination).expect("remove test directory");
+    }
+
+    #[test]
+    fn bad_versions_is_backward_compatible_and_uses_camel_case() {
+        let config: AppConfig = serde_json::from_str(
+            r#"{
+                "activeVersion": "1.0.0",
+                "selectedStrategy": "general.bat"
+            }"#,
+        )
+        .expect("deserialize legacy config");
+        assert!(config.bad_versions.is_empty());
+
+        let serialized = serde_json::to_value(config).expect("serialize config");
+        assert_eq!(serialized["badVersions"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn accepts_prepared_version_with_required_files() {
+        let (version, path) = test_version_dir("valid");
+        fs::write(path.join("general.bat"), b"test").expect("write strategy");
+        fs::write(path.join("service.bat"), b"test").expect("write service");
+
+        assert!(validate_prepared_version(&version, &path).is_ok());
+
+        fs::remove_dir_all(path).expect("remove test version directory");
+    }
+
+    #[test]
+    fn rejects_prepared_version_without_service_bat() {
+        let (version, path) = test_version_dir("missing-service");
+        fs::write(path.join("general.bat"), b"test").expect("write strategy");
+
+        let errors = validate_prepared_version(&version, &path).expect_err("reject version");
+        assert!(errors.iter().any(|error| error.contains("service.bat")));
+
+        fs::remove_dir_all(path).expect("remove test version directory");
+    }
 }
 
 

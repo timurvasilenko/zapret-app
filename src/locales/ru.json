@@ -57,7 +57,15 @@
         "releaseInfo": "О релизе",
         "versionSelectLabel": "Выбор версии обхода",
         "selectVersion": "Выберите версию",
+        "unsupportedVersion": "{{version}} — не поддерживается",
         "notify": "Уведомлять о наличии новой версии zapret"
+    },
+    "unsupportedVersionDialog": {
+        "title": "Эта версия zapret пока не поддерживается",
+        "description": "Версия {{version}} скачана, но ZPRT App не может с ней работать. Не выбирайте её для запуска. Разработчик выпустит исправление в ближайшее время или оно уже доступно в новой версии приложения.",
+        "openReleases": "Проверить обновления ZPRT App",
+        "reportProblem": "Сообщить о проблеме",
+        "close": "Понятно"
     },
     "toasts": {
         "newZapretVersion": "Доступна новая версия zapret",
