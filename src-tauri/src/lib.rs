@@ -328,6 +328,13 @@ fn parse_version_for_sort(value: &str) -> Option<Version> {
     Version::parse(value.trim_start_matches('v')).ok()
 }
 
+fn compare_zapret_versions(left: &str, right: &str) -> Ordering {
+    match (parse_version_for_sort(left), parse_version_for_sort(right)) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        _ => natural_sort_cmp(&normalize_version(left), &normalize_version(right)),
+    }
+}
+
 fn list_installed_versions() -> Result<Vec<String>, String> {
     let mut versions = Vec::new();
     for entry in fs::read_dir(zapret_root()?).map_err(|e| e.to_string())? {
@@ -338,12 +345,7 @@ fn list_installed_versions() -> Result<Vec<String>, String> {
     }
 
     versions.sort_by(|a, b| {
-        let va = parse_version_for_sort(a);
-        let vb = parse_version_for_sort(b);
-        match (va, vb) {
-            (Some(va), Some(vb)) => vb.cmp(&va),
-            _ => b.cmp(a),
-        }
+        compare_zapret_versions(b, a)
     });
     Ok(versions)
 }
@@ -483,12 +485,7 @@ fn repairable_bad_versions(config: &AppConfig) -> Vec<String> {
         .map(|entry| entry.zapret_version.clone())
         .collect::<Vec<_>>();
     versions.sort_by(|a, b| {
-        let va = parse_version_for_sort(a);
-        let vb = parse_version_for_sort(b);
-        match (va, vb) {
-            (Some(va), Some(vb)) => vb.cmp(&va),
-            _ => natural_sort_cmp(b, a),
-        }
+        compare_zapret_versions(b, a)
     });
     versions.dedup();
     versions
@@ -1328,7 +1325,7 @@ async fn build_ui_state() -> Result<UiState, String> {
 
     let newest_installed = installed_versions.first().cloned();
     let update_available = match (&newest_installed, &latest_version) {
-        (Some(installed), Some(latest)) => normalize_version(installed) != normalize_version(latest),
+        (Some(installed), Some(latest)) => is_version_greater_than(latest, installed),
         (None, Some(_)) => true,
         _ => false,
     };
@@ -1807,10 +1804,7 @@ fn emit_bypass_state_changed(app: &AppHandle) {
 }
 
 fn is_version_greater_than(left: &str, right: &str) -> bool {
-    match (parse_version_for_sort(left), parse_version_for_sort(right)) {
-        (Some(l), Some(r)) => l > r,
-        _ => normalize_version(left) != normalize_version(right),
-    }
+    compare_zapret_versions(left, right) == Ordering::Greater
 }
 
 fn ensure_update_toast_window(app: &AppHandle) -> Result<(), String> {
@@ -1912,7 +1906,7 @@ async fn check_and_notify_new_zapret_version(app: &AppHandle) -> Result<(), Stri
     let installed_versions = list_installed_versions()?;
     let newest_installed = installed_versions.first().cloned();
     let update_available = match newest_installed.as_deref() {
-        Some(installed) => normalize_version(installed) != latest_version,
+        Some(installed) => is_version_greater_than(&latest_version, installed),
         None => true,
     };
 
@@ -2277,9 +2271,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        flatten_single_root_directory, is_older_app_version, validate_prepared_version,
-        zapret_root, AppConfig,
+        compare_zapret_versions, flatten_single_root_directory, is_older_app_version,
+        is_version_greater_than, validate_prepared_version, zapret_root, AppConfig,
     };
+    use std::cmp::Ordering;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2383,6 +2378,20 @@ mod tests {
         assert!(is_older_app_version("1.3.3", "1.4.0"));
         assert!(is_older_app_version("1.4.0-rc.1", "1.4.0"));
         assert!(!is_older_app_version("1.4.0", "1.4.0-rc.1"));
+    }
+
+    #[test]
+    fn compares_zapret_versions_with_letter_suffixes() {
+        assert_eq!(
+            compare_zapret_versions("1.10.0", "1.9.9d"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_zapret_versions("1.9.9d", "1.9.9c"),
+            Ordering::Greater
+        );
+        assert!(!is_version_greater_than("1.10.0", "1.10.0"));
+        assert!(is_version_greater_than("1.10.0", "1.9.9d"));
     }
 
     #[test]
